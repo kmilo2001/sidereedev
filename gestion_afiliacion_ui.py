@@ -32,7 +32,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QDialog, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton,
+    QLabel, QLineEdit, QPushButton, QComboBox,
     QTableWidget, QTableWidgetItem,
     QFrame, QSizePolicy, QScrollArea,
     QAbstractItemView, QMessageBox, QMenu,
@@ -832,15 +832,146 @@ class TabAfiliacion(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════
-# VENTANA STANDALONE
+# DIALOGO SELECTOR DE ENTIDAD (solo modo standalone / desarrollo)
+# ══════════════════════════════════════════════════════════════
+
+class _DialogSelectorEntidad(QDialog):
+    """
+    Aparece SOLO en modo standalone (python gestion_afiliacion_ui.py).
+    En produccion (.exe / main) esta ventana NUNCA se muestra.
+    """
+    def __init__(self, entidades: list[dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Seleccionar entidad — Modo desarrollo")
+        self.setModal(True); self.setFixedWidth(460)
+        self.setStyleSheet(f"QDialog{{background:{P['bg']};}}" + _CSS_BASE)
+        self.entidad_id: int | None = None
+
+        lay = QVBoxLayout(self); lay.setContentsMargins(24,20,24,20); lay.setSpacing(12)
+
+        t = QLabel("Modo desarrollo — Seleccionar entidad")
+        t.setStyleSheet(f"color:{P['txt']};font-size:16px;font-weight:700;background:transparent;")
+        lay.addWidget(t)
+
+        av = QLabel(
+            "Este selector solo aparece al ejecutar el modulo directamente. "
+            "En produccion el entidad_id viene de la sesion autenticada."
+        )
+        av.setWordWrap(True)
+        av.setStyleSheet(
+            f"background:rgba(210,153,34,.12);border:1px solid {P['warn']};"
+            f"border-radius:7px;color:{P['warn']};padding:10px 12px;font-size:11px;"
+        )
+        lay.addWidget(av)
+
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"border:none;border-top:1px solid {P['border']};background:transparent;")
+        sep.setFixedHeight(1); lay.addWidget(sep)
+
+        lbl_e = QLabel("IPS / Entidad:")
+        lbl_e.setStyleSheet(f"color:{P['txt2']};font-size:12px;background:transparent;")
+        lay.addWidget(lbl_e)
+
+        self._combo = QComboBox()
+        self._combo.setStyleSheet(
+            f"QComboBox{{background:{P['input']};border:1.5px solid {P['border']};"
+            f"border-radius:7px;padding:8px 12px;color:{P['txt']};font-size:13px;"
+            f"min-height:40px;}}"
+            f"QComboBox:focus{{border-color:{P['focus']};}}"
+            f"QComboBox QAbstractItemView{{background:{P['card']};color:{P['txt']};"
+            f"border:1px solid {P['border']};selection-background-color:{P['acc_lt']};}}"
+        )
+        for e in entidades:
+            self._combo.addItem(
+                f"[{e['id']}] {e['nombre_entidad']}  —  NIT {e['nit']}",
+                e["id"]
+            )
+        lay.addWidget(self._combo); lay.addSpacing(8)
+
+        row = QHBoxLayout(); row.setSpacing(10)
+        bc = QPushButton("Cancelar"); bc.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{P['txt2']};"
+            f"border:1.5px solid {P['border']};border-radius:7px;padding:8px 18px;}}"
+            f"QPushButton:hover{{border-color:{P['focus']};color:{P['txt']};}}"
+        )
+        bc.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        bc.clicked.connect(self.reject)
+        bo = QPushButton("Continuar"); bo.setStyleSheet(
+            f"QPushButton{{background:{P['accent']};color:white;border:none;"
+            f"border-radius:7px;padding:9px 18px;font-weight:600;}}"
+            f"QPushButton:hover{{background:{P['acc_h']};}}"
+        )
+        bo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        bo.clicked.connect(self._aceptar)
+        row.addWidget(bc); row.addStretch(); row.addWidget(bo)
+        lay.addLayout(row)
+
+    def _aceptar(self):
+        self.entidad_id = self._combo.currentData(); self.accept()
+
+
+# ══════════════════════════════════════════════════════════════
+# SESION GLOBAL
+# ══════════════════════════════════════════════════════════════
+
+class _Sesion:
+    """
+    Modo standalone  → entidad_id se resuelve desde _DialogSelectorEntidad.
+    Modo produccion  → llamar sesion.set(...) antes de instanciar AfiliacionWindow.
+
+    Uso desde el sistema principal:
+        from gestion_afiliacion_ui import sesion
+        sesion.set(entidad_id=5, rol="admin", ops_id=42, nombre="Juan")
+        win = AfiliacionWindow()
+        win.show()
+    """
+    def __init__(self):
+        self.entidad_id: int | None = None
+        self.ops_id:     int | None = None
+        self.rol:        str        = "admin"
+        self.nombre:     str        = ""
+        self._inyectada: bool       = False
+
+    def set(self, entidad_id: int, rol: str = "admin",
+            ops_id=None, nombre: str = ""):
+        self.entidad_id = entidad_id
+        self.rol        = rol
+        self.ops_id     = int(ops_id) if ops_id and str(ops_id).strip() not in ("","0") else None
+        self.nombre     = nombre
+        self._inyectada = True
+
+    @property
+    def es_standalone(self) -> bool:
+        return not self._inyectada
+
+
+sesion = _Sesion()
+
+
+# ══════════════════════════════════════════════════════════════
+# VENTANA PRINCIPAL
 # ══════════════════════════════════════════════════════════════
 
 class AfiliacionWindow(QMainWindow):
-    def __init__(self, entidad_id: int = 1):
+    """
+    Modo standalone  → muestra selector de entidad real de la BD.
+    Modo produccion  → usa sesion.entidad_id (inyectado por el sistema).
+    """
+    def __init__(self, entidad_id: int | None = None, rol: str | None = None,
+                 ops_id=None, nombre_usuario: str = ""):
         super().__init__()
         self.setWindowTitle("Tipos de afiliacion — Gestion Eventos Salud")
-        self.setStyleSheet(_CSS_BASE)
-        self.setMinimumSize(360, 400)
+        self.setStyleSheet(_CSS_BASE); self.setMinimumSize(360, 400)
+
+        # Resolver sesion
+        if entidad_id is not None:
+            self._eid = entidad_id; self._rol = rol or "admin"
+        elif sesion.entidad_id is not None:
+            self._eid = sesion.entidad_id; self._rol = sesion.rol
+        else:
+            self._eid = None; self._rol = "admin"
+
+        self._nombre = nombre_usuario or sesion.nombre
 
         screen = QApplication.primaryScreen()
         if screen:
@@ -854,36 +985,64 @@ class AfiliacionWindow(QMainWindow):
 
         central = QWidget(); central.setStyleSheet(f"background:{P['bg']};")
         self.setCentralWidget(central)
-        root = QVBoxLayout(central); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
+        self._root = QVBoxLayout(central); self._root.setContentsMargins(0,0,0,0); self._root.setSpacing(0)
 
         # Topbar
         topbar = QWidget(); topbar.setFixedHeight(52)
-        topbar.setStyleSheet(
-            f"background:{P['card']};border-bottom:1px solid {P['border']};"
-        )
+        topbar.setStyleSheet(f"background:{P['card']};border-bottom:1px solid {P['border']};")
         tl = QHBoxLayout(topbar); tl.setContentsMargins(20,0,20,0); tl.setSpacing(8)
         tl.addWidget(_lbl("Gestion", size=12, color=P["txt2"]))
         tl.addWidget(_lbl(" / ", size=12, color=P["muted"]))
         tl.addWidget(_lbl("Tipos de afiliacion", size=14, bold=True))
         tl.addStretch()
-        tl.addWidget(_lbl(f"Entidad #{entidad_id}", size=11, color=P["muted"]))
-        root.addWidget(topbar)
+        self._lbl_top = _lbl("", size=11, color=P["muted"])
+        tl.addWidget(self._lbl_top)
+        self._root.addWidget(topbar)
 
-        # Ayuda rapida debajo del topbar
         ayuda = QWidget()
-        ayuda.setStyleSheet(
-            f"background:rgba(56,139,253,.08);border-bottom:1px solid {P['border']};"
-        )
+        ayuda.setStyleSheet(f"background:rgba(56,139,253,.08);border-bottom:1px solid {P['border']};")
         al = QHBoxLayout(ayuda); al.setContentsMargins(20,6,20,6)
-        al.addWidget(_lbl(
-            "Tip: haz clic izquierdo en el boton '...' o clic derecho sobre cualquier fila para ver las acciones.",
-            size=11, color=P["txt2"],
-        ))
-        root.addWidget(ayuda)
+        al.addWidget(_lbl("Tip: clic '...' o clic derecho en la fila para ver acciones.", size=11, color=P["txt2"]))
+        self._root.addWidget(ayuda)
 
-        # Tab
-        self._tab = TabAfiliacion(entidad_id, central)
-        root.addWidget(self._tab, 1)
+        self._placeholder = QLabel("Cargando...")
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder.setStyleSheet(f"color:{P['muted']};font-size:14px;background:transparent;")
+        self._root.addWidget(self._placeholder, 1)
+
+        QTimer.singleShot(50, self._resolver_entidad)
+
+    def _resolver_entidad(self):
+        if self._eid is not None:
+            self._construir_tab(); return
+
+        entidades = afil_bk.listar_entidades_disponibles()
+        if not entidades:
+            self._placeholder.setText(
+                "No hay entidades registradas en la base de datos.\n"
+                "Crea una entidad (IPS) primero."
+            )
+            self._placeholder.setStyleSheet(
+                f"color:{P['err']};font-size:13px;background:transparent;padding:20px;"
+            )
+            return
+
+        if len(entidades) == 1:
+            self._eid = entidades[0]["id"]; self._construir_tab(); return
+
+        dlg = _DialogSelectorEntidad(entidades, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or dlg.entidad_id is None:
+            self.close(); return
+        self._eid = dlg.entidad_id; self._construir_tab()
+
+    def _construir_tab(self):
+        self._placeholder.hide(); self._root.removeWidget(self._placeholder)
+        self._tab = TabAfiliacion(self._eid, self)
+        self._root.addWidget(self._tab, 1)
+        modo = "DEV" if sesion.es_standalone and sesion.entidad_id is None else self._rol.upper()
+        txt = f"Entidad #{self._eid}  |  {modo}"
+        if self._nombre: txt += f"  |  {self._nombre}"
+        self._lbl_top.setText(txt)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -900,7 +1059,7 @@ def main():
     font.setHintingPreference(QFont.HintingPreference.PreferDefaultHinting)
     app.setFont(font)
 
-    win = AfiliacionWindow(entidad_id=1)
+    win = AfiliacionWindow()  # entidad_id=None → modo standalone → selector automatico
     win.show()
     sys.exit(app.exec())
 

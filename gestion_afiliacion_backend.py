@@ -552,3 +552,48 @@ def nombre_afiliacion(afil_id: int) -> str:
     """
     row = obtener_afiliacion(afil_id)
     return row["nombre"] if row else ""
+
+
+# ══════════════════════════════════════════════════════════════
+# HELPERS STANDALONE (prueba modulo por modulo)
+# ══════════════════════════════════════════════════════════════
+
+def listar_entidades_disponibles() -> list[dict]:
+    """
+    Retorna entidades activas de la BD para el selector standalone.
+    Retorna: [{id, nombre_entidad, nit}]
+    """
+    try:
+        with _CursorCtx() as cur:
+            cur.execute(
+                "SELECT id, nombre_entidad, nit "
+                "FROM public.entidad WHERE activo=TRUE "
+                "ORDER BY nombre_entidad"
+            )
+            return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        print(f"[ERROR] listar_entidades_disponibles: {e}")
+        return []
+
+
+def resolver_entidad_standalone(entidad_id_hint: int = 1) -> Optional[int]:
+    """
+    Resuelve un entidad_id valido para modo standalone.
+    1. Prueba el hint. 2. Fallback a la primera entidad activa.
+    """
+    try:
+        with _CursorCtx() as cur:
+            cur.execute(
+                "SELECT id FROM public.entidad WHERE id=%s AND activo=TRUE",
+                (entidad_id_hint,),
+            )
+            if cur.fetchone():
+                return entidad_id_hint
+            cur.execute(
+                "SELECT id FROM public.entidad WHERE activo=TRUE ORDER BY id LIMIT 1"
+            )
+            row = cur.fetchone()
+            return row["id"] if row else None
+    except Exception as e:
+        print(f"[ERROR] resolver_entidad_standalone: {e}")
+        return None

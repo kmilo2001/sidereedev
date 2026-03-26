@@ -2,12 +2,19 @@
 # =============================================================================
 # conexion.py - Modulo de conexion a PostgreSQL
 # Base de datos: gestion_eventos (Sistema de Gestion de Eventos - Sector Salud)
+#
+# SINCRONIZACION BIDIRECCIONAL con config_conexion_backend.py:
+#   - Al importar, carga la config desde gestion_eventos_db.cfg (si existe).
+#   - Se registra como observer: cualquier cambio guardado desde la UI
+#     se refleja automaticamente en DB_CONFIG sin reiniciar la app.
+#   - Si la UI guarda una nueva config, la proxima llamada a get_conexion()
+#     usara los nuevos parametros de forma transparente.
 # =============================================================================
 
 import sys
 import io
 import psycopg2
-from psycopg2 import OperationalError, sql
+from psycopg2 import OperationalError
 from psycopg2.extras import RealDictCursor
 
 # Forzar salida UTF-8 en Windows (evita UnicodeEncodeError con cp1252)
@@ -15,29 +22,77 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="repla
 
 
 # ---------------------------------------------------------------------------
-# PARÁMETROS DE CONEXIÓN
+# PARAMETROS DE CONEXION
+# Valores por defecto. Se sobreescriben automaticamente al cargar
+# gestion_eventos_db.cfg (ver bloque de sincronizacion al final del modulo).
 # ---------------------------------------------------------------------------
-DB_CONFIG = {
-    "host":     "localhost",       # servidor local
-    "port":     5432,              # puerto por defecto de PostgreSQL
-    "dbname":   "gestion_eventos", # nombre de la base de datos
-    "user":     "postgres",        # usuario de PostgreSQL
-    "password": "17",              # contraseña
-    "options":  "-c search_path=public"  # esquema por defecto
+DB_CONFIG: dict = {
+    "host":     "localhost",
+    "port":     5432,
+    "dbname":   "gestion_eventos",
+    "user":     "postgres",
+    "password": "17",
+    "options":  "-c search_path=public",
 }
 
 
 # ---------------------------------------------------------------------------
-# FUNCIÓN: obtener conexión simple
+# SINCRONIZACION CON config_conexion_backend.py
+# Se ejecuta una sola vez al importar el modulo.
+# ---------------------------------------------------------------------------
+def _sincronizar_con_cfg_guardada() -> None:
+    """
+    Lee gestion_eventos_db.cfg (si existe) y actualiza DB_CONFIG.
+    Luego registra un observer para que futuros cambios desde la UI
+    se apliquen automaticamente en tiempo de ejecucion.
+    """
+    try:
+        import config_conexion_backend as cfg_bk
+
+        # 1. Cargar config actual del archivo
+        cfg_guardada = cfg_bk.cargar_config()
+        DB_CONFIG.update({
+            k: cfg_guardada[k]
+            for k in ("host", "port", "dbname", "user", "password")
+            if k in cfg_guardada
+        })
+
+        # 2. Registrarse como observer: cuando la UI guarde cambios,
+        #    DB_CONFIG se actualiza automaticamente sin reiniciar.
+        def _on_config_change(nueva_cfg: dict) -> None:
+            DB_CONFIG.update({
+                k: nueva_cfg[k]
+                for k in ("host", "port", "dbname", "user", "password")
+                if k in nueva_cfg
+            })
+
+        cfg_bk.registrar_observer(_on_config_change)
+
+    except ImportError:
+        # config_conexion_backend no disponible -> usar DB_CONFIG con defaults
+        pass
+    except Exception:
+        pass  # error inesperado -> no romper la importacion del modulo
+
+
+# Ejecutar sincronizacion al importar el modulo
+_sincronizar_con_cfg_guardada()
+
+
+# ---------------------------------------------------------------------------
+# FUNCION: obtener conexion simple (filas como tuplas)
 # ---------------------------------------------------------------------------
 def get_conexion():
     """
-    Retorna una conexión activa a la base de datos gestion_eventos.
+    Retorna una conexion activa a la base de datos.
+    Usa siempre los valores actuales de DB_CONFIG (se actualiza
+    automaticamente si la UI cambia la configuracion).
 
     Uso:
         conn = get_conexion()
-        cursor = conn.cursor()
-        ...
+        cur  = conn.cursor()
+        cur.execute("SELECT * FROM paciente LIMIT 5")
+        filas = cur.fetchall()   # lista de tuplas
         conn.close()
     """
     try:
@@ -49,18 +104,19 @@ def get_conexion():
 
 
 # ---------------------------------------------------------------------------
-# FUNCIÓN: obtener conexión con cursor de diccionario
-# Retorna filas como diccionarios {columna: valor} en lugar de tuplas.
+# FUNCION: obtener conexion con cursor de diccionario
+# Retorna filas como dicts {columna: valor} en lugar de tuplas.
 # ---------------------------------------------------------------------------
 def get_conexion_dict():
     """
-    Retorna una conexión cuyo cursor devuelve filas como diccionarios.
+    Retorna una conexion cuyo cursor devuelve filas como diccionarios.
 
     Uso:
         conn = get_conexion_dict()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM paciente LIMIT 5")
-        filas = cursor.fetchall()  # lista de dicts
+        cur  = conn.cursor()
+        cur.execute("SELECT * FROM paciente LIMIT 5")
+        for fila in cur.fetchall():
+            print(fila["primer_nombre"], fila["primer_apellido"])
         conn.close()
     """
     try:
@@ -72,8 +128,8 @@ def get_conexion_dict():
 
 
 # ---------------------------------------------------------------------------
-# CLASE: Gestor de contexto (with ... as ...)
-# Cierra la conexión automáticamente al salir del bloque.
+# CLASE: Gestor de contexto (recomendado)
+# Cierra la conexion y hace commit/rollback automaticamente.
 # ---------------------------------------------------------------------------
 class Conexion:
     """
@@ -81,17 +137,26 @@ class Conexion:
 
     Uso recomendado:
         with Conexion() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM eps")
-            resultados = cursor.fetchall()
-        # la conexión se cierra automáticamente aquí
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM eps")
+            resultados = cur.fetchall()
+        # la conexion se cierra y hace commit automaticamente
 
     Con diccionarios:
         with Conexion(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT nombre, nit FROM eps LIMIT 3")
-            for fila in cursor.fetchall():
+            cur = conn.cursor()
+            cur.execute("SELECT nombre, nit FROM eps LIMIT 3")
+            for fila in cur.fetchall():
                 print(fila["nombre"], fila["nit"])
+
+    Manejo de transacciones:
+        try:
+            with Conexion() as conn:
+                cur = conn.cursor()
+                cur.execute("INSERT INTO evento ...")
+                # si lanza excepcion -> rollback automatico
+        except Exception as e:
+            print(f"Error: {e}")
     """
 
     def __init__(self, dict_cursor: bool = False):
@@ -108,87 +173,86 @@ class Conexion:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.conn:
             if exc_type is None:
-                self.conn.commit()   # confirmar cambios si no hubo error
+                self.conn.commit()    # confirmar si no hubo error
             else:
-                self.conn.rollback() # revertir si hubo excepción
+                self.conn.rollback()  # revertir si hubo excepcion
             self.conn.close()
-        return False  # no suprime la excepción
+        return False  # no suprimir la excepcion
 
 
 # ---------------------------------------------------------------------------
-# FUNCIÓN: probar conexión (verificación rápida)
+# FUNCION: probar conexion (verificacion rapida en consola)
 # ---------------------------------------------------------------------------
-def probar_conexion():
+def probar_conexion() -> bool:
     """
-    Verifica que la conexión funcione correctamente.
-    Imprime la versión de PostgreSQL y el nombre de la base de datos.
+    Verifica que la conexion funcione e imprime informacion de diagnostico.
+    Retorna True si la conexion es exitosa, False en caso contrario.
     """
     try:
         with Conexion() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT version(), current_database(), current_user;")
-            version, base_datos, usuario = cursor.fetchone()
+            cur = conn.cursor()
+            cur.execute("SELECT version(), current_database(), current_user;")
+            version, base_datos, usuario = cur.fetchone()
             print("=" * 60)
             print("  [OK] Conexion exitosa a PostgreSQL")
             print(f"  Base de datos : {base_datos}")
+            print(f"  Host          : {DB_CONFIG['host']}:{DB_CONFIG['port']}")
             print(f"  Usuario       : {usuario}")
             print(f"  Version       : {version.split(',')[0]}")
             print("=" * 60)
             return True
     except Exception as e:
         print(f"  [ERROR] No se pudo conectar: {e}")
+        print(f"  Host    : {DB_CONFIG.get('host')}:{DB_CONFIG.get('port')}")
+        print(f"  Base BD : {DB_CONFIG.get('dbname')}")
+        print(f"  Usuario : {DB_CONFIG.get('user')}")
+        print(
+            "  Tip: Ejecuta la app y configura la conexion desde "
+            "Ajustes > Configuracion de base de datos"
+        )
         return False
 
 
 # ---------------------------------------------------------------------------
-# FUNCIÓN: llamar una función RPC de la base de datos
+# FUNCION: llamar funcion RPC almacenada en PostgreSQL
 # ---------------------------------------------------------------------------
 def llamar_rpc(nombre_funcion: str, **kwargs):
     """
-    Llama a una función almacenada (RPC) de PostgreSQL y retorna el resultado.
+    Llama a una funcion almacenada (RPC) de PostgreSQL y retorna el resultado.
 
     Ejemplos:
-        # Dashboard general de una entidad
         resultado = llamar_rpc("rpc_dashboard", p_entidad_id=1)
-
-        # Buscar pacientes por texto
-        pacientes = llamar_rpc("buscar_pacientes",
-                               p_entidad_id=1, p_texto="garcia")
-
-        # Resumen de facturación
-        resumen = llamar_rpc("resumen_facturacion",
-                             p_entidad_id=1,
-                             p_fecha_desde="2024-01-01",
-                             p_fecha_hasta="2024-12-31")
+        pacientes = llamar_rpc("buscar_pacientes", p_entidad_id=1, p_texto="garcia")
+        resumen   = llamar_rpc("resumen_facturacion",
+                               p_entidad_id=1,
+                               p_fecha_desde="2024-01-01",
+                               p_fecha_hasta="2024-12-31")
+        stats     = llamar_rpc("stats_sistema")
     """
     try:
         with Conexion(dict_cursor=True) as conn:
-            cursor = conn.cursor()
-
-            # Construir llamada: SELECT * FROM funcion(param1=%s, param2=%s, ...)
-            params_sql  = ", ".join(f"{k}=%({k})s" for k in kwargs)
-            query       = f"SELECT * FROM public.{nombre_funcion}({params_sql})"
-
-            cursor.execute(query, kwargs)
-            return cursor.fetchall()
-
+            cur = conn.cursor()
+            params_sql = ", ".join(f"{k}=%({k})s" for k in kwargs)
+            query = f"SELECT * FROM public.{nombre_funcion}({params_sql})"
+            cur.execute(query, kwargs)
+            return cur.fetchall()
     except Exception as e:
         print(f"[ERROR] Al llamar RPC '{nombre_funcion}': {e}")
         raise
 
 
 # ---------------------------------------------------------------------------
-# EJEMPLOS DE USO (se ejecutan solo al correr este archivo directamente)
+# PUNTO DE ENTRADA: prueba directa del modulo
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
 
-    # 1. Verificar conexión
+    # 1. Verificar conexion
     if not probar_conexion():
-        exit(1)
+        sys.exit(1)
 
     print()
 
-    # 2. Consulta directa de ejemplo — listar tipos de documento
+    # 2. Listar tipos de documento
     print("Tipos de documento registrados:")
     print("-" * 40)
     with Conexion(dict_cursor=True) as conn:
@@ -204,7 +268,7 @@ if __name__ == "__main__":
 
     print()
 
-    # 3. Consulta directa de ejemplo — estados de evento
+    # 3. Listar estados de evento
     print("Estados de evento:")
     print("-" * 40)
     with Conexion(dict_cursor=True) as conn:
@@ -215,11 +279,15 @@ if __name__ == "__main__":
 
     print()
 
-    # 4. Llamada RPC — stats globales del sistema
-    print("Estadísticas del sistema:")
+    # 4. Stats del sistema via RPC
+    print("Estadisticas del sistema:")
     print("-" * 40)
-    resultado = llamar_rpc("stats_sistema")
-    if resultado:
-        stats = resultado[0]
-        for clave, valor in stats.items() if hasattr(stats, "items") else []:
-            print(f"  {clave:<35} {valor}")
+    try:
+        resultado = llamar_rpc("stats_sistema")
+        if resultado:
+            stats = resultado[0]
+            if hasattr(stats, "items"):
+                for clave, valor in stats.items():
+                    print(f"  {clave:<35} {valor}")
+    except Exception as e:
+        print(f"  No se pudo obtener estadisticas: {e}")

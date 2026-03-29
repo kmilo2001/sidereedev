@@ -326,6 +326,7 @@ def listar_eventos(entidad_id: int, ops_id=None, texto: str = "",
             "  e.motivo,"
             "  e.valor,"
             "  e.numero_admision,"
+            "  e.codigo_evento,"
             "  e.numero_factura,"
             "  u.nombre_completo                              AS ops_nombre,"
             "  COUNT(*) OVER()::bigint                        AS total_registros,"
@@ -370,6 +371,7 @@ def obtener_evento(entidad_id: int, evento_id: int) -> dict | None:
                   e.diagnostico_principal,
                   e.valor,
                   e.numero_admision,
+                  e.codigo_evento,
                   e.numero_factura,
                   e.estado_id,
                   e.activo,
@@ -433,14 +435,23 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
     # Regla de negocio: valor > 0 -> Terminado (2)
     estado_id = 2 if valor > 0 else int(datos.get("estado_id") or 1)
 
-    num_factura  = (datos.get("numero_factura") or "").strip() or None
     num_admision = (datos.get("numero_admision") or "").strip() or None
+    num_codigo   = (datos.get("codigo_evento")   or "").strip() or None
+    num_factura  = (datos.get("numero_factura")  or "").strip() or None
 
-    if valor > 0 and not num_factura:
-        return Resultado(
-            False,
-            "El numero de factura es obligatorio cuando el valor es mayor a 0."
-        )
+    # Al registrar por primera vez: solo numero_admision es obligatorio
+    if evento_id is None:
+        if not num_admision:
+            return Resultado(False, "El numero de admision es obligatorio al registrar el evento.")
+
+    # Al terminar (estado=2 / valor>0): los tres campos son obligatorios
+    if estado_id == 2:
+        if not num_admision:
+            return Resultado(False, "El numero de admision es obligatorio para terminar el evento.")
+        if not num_codigo:
+            return Resultado(False, "El codigo del evento es obligatorio para terminar el evento.")
+        if not num_factura:
+            return Resultado(False, "El numero de factura es obligatorio para terminar el evento.")
 
     oid      = _ops_safe(ops_id)
     eps_id   = int(datos["eps_id"]) if datos.get("eps_id") else None
@@ -459,14 +470,14 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
                     """INSERT INTO public.evento (
                            entidad_id, paciente_id, fecha_evento,
                            eps_id, tipo_afiliacion_id, afiliado_eps,
-                           motivo, valor, numero_admision, numero_factura,
-                           estado_id, creado_por_ops,
+                           motivo, valor, numero_admision, codigo_evento,
+                           numero_factura, estado_id, creado_por_ops,
                            tiene_contrato
                        ) VALUES (
                            %s, %s, %s::date,
                            %s, %s, %s,
                            %s, %s, %s, %s,
-                           %s, %s,
+                           %s, %s, %s,
                            COALESCE(
                                public.eps_tiene_contrato(%s::integer, %s::integer, %s::date),
                                FALSE
@@ -476,8 +487,8 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
                     (
                         entidad_id, pac_id, fecha_ev,
                         eps_id, afil_id, afiliado,
-                        motivo, valor, num_admision, num_factura,
-                        estado_id, oid,
+                        motivo, valor, num_admision, num_codigo,
+                        num_factura, estado_id, oid,
                         entidad_id, eps_id, fecha_ev
                     )
                 )
@@ -517,6 +528,7 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
                            motivo              = %s,
                            valor               = %s,
                            numero_admision     = %s,
+                           codigo_evento       = %s,
                            numero_factura      = %s,
                            estado_id           = %s,
                            actualizado_por_ops = %s,
@@ -527,8 +539,8 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
                        WHERE id = %s AND entidad_id = %s""",
                     (
                         fecha_ev, eps_id, afil_id, afiliado,
-                        motivo, valor, num_admision, num_factura,
-                        estado_id, oid,
+                        motivo, valor, num_admision, num_codigo,
+                        num_factura, estado_id, oid,
                         entidad_id, eps_id, fecha_ev,
                         evento_id, entidad_id
                     )

@@ -967,9 +967,9 @@ class DialogEvento(BaseDialog):
         lay.addWidget(self.f_fecha); lay.addSpacing(12)
 
         self.f_admision = InputF(
-            "Numero de admision",
-            "Ej: ADM-2024-001  (dejar vacio si no aplica)",
-            ayuda="Numero asignado por admisiones al ingreso del paciente"
+            "Numero de admision *",
+            "Ej: ADM-2024-001",
+            ayuda="Obligatorio siempre. Numero asignado por admisiones al ingreso del paciente."
         )
         lay.addWidget(self.f_admision); lay.addSpacing(12)
 
@@ -1044,7 +1044,7 @@ class DialogEvento(BaseDialog):
         lay.addSpacing(20)
 
         # ── SECCION 4: Facturacion ─────────────────────────────
-        lay.addWidget(_sec_header("4. Facturacion (opcional si esta en tramite)"))
+        lay.addWidget(_sec_header("4. Facturacion (obligatorio al terminar)"))
         lay.addSpacing(10)
 
         self.f_valor = InputF(
@@ -1054,12 +1054,33 @@ class DialogEvento(BaseDialog):
         )
         lay.addWidget(self.f_valor); lay.addSpacing(12)
 
+        self.f_codigo = InputF(
+            "Codigo del evento",
+            "Ej: EV-2024-00456",
+            ayuda="Obligatorio para terminar el evento. Codigo interno asignado por la IPS o el HIS."
+        )
+        lay.addWidget(self.f_codigo); lay.addSpacing(12)
+
         self.f_factura = InputF(
             "Numero de factura",
-            "Ej: FE-2024-00123  (obligatorio si hay valor)",
-            ayuda="Numero de la factura electronica o fisica emitida al paciente / EPS"
+            "Ej: FE-2024-00123",
+            ayuda="Obligatorio para terminar el evento. Numero de la factura electronica o fisica."
         )
         lay.addWidget(self.f_factura)
+        lay.addSpacing(10)
+
+        aviso_term = QLabel(
+            "Al terminar el evento (valor > 0) los campos "
+            "Numero de admision, Codigo del evento y Numero de factura son obligatorios."
+        )
+        aviso_term.setWordWrap(True)
+        aviso_term.setStyleSheet(
+            f"color:{P['txt2']};font-size:11px;"
+            f"background:rgba(44,106,223,.07);"
+            f"border:1px solid {P['border']};"
+            f"border-radius:6px;padding:8px 12px;"
+        )
+        lay.addWidget(aviso_term)
         lay.addSpacing(20)
 
         # ── SECCION 5: Estado (solo admin en edicion) ──────────
@@ -1182,6 +1203,7 @@ class DialogEvento(BaseDialog):
             )
         self.f_motivo.set(d.get("motivo", ""))
         self.f_admision.set(d.get("numero_admision", "") or "")
+        self.f_codigo.set(d.get("codigo_evento", "") or "")
         val = d.get("valor", 0)
         self.f_valor.set(f"{float(val):.2f}" if val else "")
         if self._rol == "admin" and self._editando and hasattr(self, "_bg_est"):
@@ -1197,6 +1219,8 @@ class DialogEvento(BaseDialog):
             self.sb.err("Debes seleccionar el tipo de afiliacion."); return
         if not self.f_motivo.text():
             self.sb.err("El motivo de la atencion es obligatorio."); return
+        if not self.f_admision.text():
+            self.sb.err("El numero de admision es obligatorio."); return
 
         estado_id = 1
         if self._rol == "admin" and self._editando and hasattr(self, "_bg_est"):
@@ -1208,10 +1232,29 @@ class DialogEvento(BaseDialog):
             valor_num = float(valor_txt)
         except ValueError:
             valor_num = 0
-        if valor_num > 0 and not self.f_factura.text():
-            self.f_factura.err("Obligatorio cuando hay un valor de facturacion.")
-            self.sb.err("Ingresa el numero de factura para registrar el valor."); return
+
+        # Si hay valor (-> Terminado) los tres campos de cierre son obligatorios
+        terminando = valor_num > 0 or estado_id == 2
+        if terminando:
+            errores = []
+            if not self.f_admision.text():
+                self.f_admision.err("Obligatorio al terminar el evento.")
+                errores.append("numero de admision")
+            if not self.f_codigo.text():
+                self.f_codigo.err("Obligatorio al terminar el evento.")
+                errores.append("codigo del evento")
+            if not self.f_factura.text():
+                self.f_factura.err("Obligatorio al terminar el evento.")
+                errores.append("numero de factura")
+            if errores:
+                self.sb.err(
+                    "Para terminar el evento debes completar: "
+                    + ", ".join(errores) + "."
+                )
+                return
         else:
+            self.f_admision.ok()
+            self.f_codigo.ok()
             self.f_factura.ok()
 
         datos = {
@@ -1222,6 +1265,7 @@ class DialogEvento(BaseDialog):
             "afiliado_eps":       self.ck_afil.isChecked(),
             "motivo":             self.f_motivo.text(),
             "numero_admision":    self.f_admision.text() or None,
+            "codigo_evento":      self.f_codigo.text() or None,
             "valor":              valor_txt,
             "numero_factura":     self.f_factura.text() or None,
             "estado_id":          estado_id,
@@ -1312,8 +1356,8 @@ class DialogGestionar(BaseDialog):
         lay.addWidget(self.f_motivo); lay.addSpacing(12)
 
         self.f_admision = InputF(
-            "Numero de admision",
-            "Opcional — ej: ADM-2024-001"
+            "Numero de admision *",
+            "Ej: ADM-2024-001"
         )
         self.f_admision.set(ev.get("numero_admision", "") or "")
         lay.addWidget(self.f_admision); lay.addSpacing(12)
@@ -1330,16 +1374,24 @@ class DialogGestionar(BaseDialog):
             self.f_valor.set(f"{val_actual:.2f}")
         lay.addWidget(self.f_valor); lay.addSpacing(12)
 
+        self.f_codigo = InputF(
+            "Codigo del evento",
+            "Ej: EV-2024-00456  (obligatorio al terminar)"
+        )
+        self.f_codigo.set(ev.get("codigo_evento", "") or "")
+        lay.addWidget(self.f_codigo); lay.addSpacing(12)
+
         self.f_factura = InputF(
             "Numero de factura",
-            "Ej: FE-2024-00123  (obligatorio si hay valor)",
+            "Ej: FE-2024-00123  (obligatorio al terminar)",
         )
         self.f_factura.set(ev.get("numero_factura", "") or "")
         lay.addWidget(self.f_factura); lay.addSpacing(14)
 
         aviso = QLabel(
-            "Al guardar con un valor mayor a 0 el evento cambiara "
-            "automaticamente a estado Terminado y se requerira el numero de factura."
+            "Al guardar con un valor mayor a 0 el evento pasa a Terminado. "
+            "En ese caso, Numero de admision, Codigo del evento y "
+            "Numero de factura son obligatorios."
         )
         aviso.setWordWrap(True)
         aviso.setStyleSheet(
@@ -1363,16 +1415,37 @@ class DialogGestionar(BaseDialog):
         self.sb.ocultar()
         if not self.f_motivo.text():
             self.sb.err("El motivo es obligatorio."); return
+        if not self.f_admision.text():
+            self.f_admision.err("El numero de admision es obligatorio.")
+            self.sb.err("El numero de admision es obligatorio."); return
 
         valor_txt = self.f_valor.text() or "0"
         try:
             valor_num = float(valor_txt)
         except ValueError:
             valor_num = 0
-        if valor_num > 0 and not self.f_factura.text():
-            self.f_factura.err("Obligatorio cuando hay un valor de facturacion.")
-            self.sb.err("Ingresa el numero de factura para registrar el valor."); return
+
+        # Al terminar (valor > 0) los tres campos son obligatorios
+        if valor_num > 0:
+            errores = []
+            if not self.f_admision.text():
+                self.f_admision.err("Obligatorio al terminar.")
+                errores.append("numero de admision")
+            if not self.f_codigo.text():
+                self.f_codigo.err("Obligatorio al terminar.")
+                errores.append("codigo del evento")
+            if not self.f_factura.text():
+                self.f_factura.err("Obligatorio al terminar.")
+                errores.append("numero de factura")
+            if errores:
+                self.sb.err(
+                    "Para terminar el evento completa: "
+                    + ", ".join(errores) + "."
+                )
+                return
         else:
+            self.f_admision.ok()
+            self.f_codigo.ok()
             self.f_factura.ok()
 
         datos = {
@@ -1383,6 +1456,7 @@ class DialogGestionar(BaseDialog):
             "afiliado_eps":       bool(self._ev.get("afiliado_eps")),
             "motivo":             self.f_motivo.text(),
             "numero_admision":    self.f_admision.text() or None,
+            "codigo_evento":      self.f_codigo.text() or None,
             "valor":              valor_txt,
             "numero_factura":     self.f_factura.text() or None,
         }
@@ -1450,6 +1524,9 @@ class DialogVerEvento(BaseDialog):
         self.lay.addLayout(_fila("Numero de admision",
                                  ev.get("numero_admision", "") or "--"))
         self.lay.addSpacing(6)
+        self.lay.addLayout(_fila("Codigo del evento",
+                                 ev.get("codigo_evento", "") or "--"))
+        self.lay.addSpacing(6)
 
         estado_txt = ev.get("estado", "") or ev.get("estado_nombre", "")
         self.lay.addLayout(_fila("Estado actual", estado_txt))
@@ -1474,6 +1551,9 @@ class DialogVerEvento(BaseDialog):
         self.lay.addSpacing(8)
         self.lay.addLayout(_fila("Valor facturado",
                                  f"${float(ev.get('valor') or 0):,.0f}", True))
+        self.lay.addSpacing(6)
+        self.lay.addLayout(_fila("Codigo del evento",
+                                 ev.get("codigo_evento", "") or "--"))
         self.lay.addSpacing(6)
         self.lay.addLayout(_fila("Numero de factura",
                                  ev.get("numero_factura", "") or "--"))
@@ -1731,10 +1811,10 @@ class TabEventos(QWidget):
     # Columnas base y sus anchos
     _COLS_OPS  = ["Fecha", "Paciente", "Documento",
                   "EPS", "Tipo Afiliacion", "Motivo",
-                  "N Admision", "N Factura", "Valor", "Estado", "Acciones"]
+                  "N Admision", "Cod Evento", "N Factura", "Valor", "Estado", "Acciones"]
     _COLS_TODO = ["Fecha", "Paciente", "Documento",
                   "EPS", "Tipo Afiliacion", "Motivo",
-                  "N Admision", "N Factura", "Valor", "Estado",
+                  "N Admision", "Cod Evento", "N Factura", "Valor", "Estado",
                   "Registrado por", "Acciones"]
 
     def __init__(self, rol: str, entidad_id: int, ops_id, parent=None):
@@ -1960,22 +2040,23 @@ class TabEventos(QWidget):
             mot = str(d.get("motivo", ""))
             self.tabla.setItem(r, 5, _item(mot[:45] + ("…" if len(mot) > 45 else "")))
             self.tabla.setItem(r, 6, _item(d.get("numero_admision", "") or "--"))
-            self.tabla.setItem(r, 7, _item(d.get("numero_factura", "") or "--"))
+            self.tabla.setItem(r, 7, _item(d.get("codigo_evento", "") or "--"))
+            self.tabla.setItem(r, 8, _item(d.get("numero_factura", "") or "--"))
             val = float(d.get("valor") or 0)
             total_f += val
-            self.tabla.setItem(r, 8, _item(f"${val:,.0f}"))
+            self.tabla.setItem(r, 9, _item(f"${val:,.0f}"))
             estado_txt = d.get("estado", "Pendiente")
             if not d.get("activo", True): estado_txt = "Inactivo"
-            self.tabla.setCellWidget(r, 9, _badge(estado_txt))
+            self.tabla.setCellWidget(r, 10, _badge(estado_txt))
 
             if self._ver_todo:
-                # Col 10: Registrado por
-                self.tabla.setItem(r, 10, _item(
+                # Col 11: Registrado por
+                self.tabla.setItem(r, 11, _item(
                     d.get("ops_nombre", "") or "Administrador"
                 ))
-                self.tabla.setCellWidget(r, 11, self._celdas_acc(d))
+                self.tabla.setCellWidget(r, 12, self._celdas_acc(d))
             else:
-                self.tabla.setCellWidget(r, 10, self._celdas_acc(d))
+                self.tabla.setCellWidget(r, 11, self._celdas_acc(d))
 
             self.tabla.setRowHeight(r, 46)
 
@@ -2148,36 +2229,42 @@ class TabEventos(QWidget):
     def _ajustar_cols(self):
         t = self.tabla; vw = t.viewport().width()
         if self._ver_todo:
-            # 12 columnas con "Registrado por"
-            cols_fijas = 90 + 130 + 110 + 110 + 100 + 110 + 80 + 90 + 120 + 130
+            # 13 columnas: +Cod Evento entre N Admision y N Factura
+            # 0:Fecha 1:Paciente 2:Doc 3:EPS 4:Afil 5:Motivo
+            # 6:NAdm  7:CodEvento 8:NFact 9:Valor 10:Estado 11:RegPor 12:Acc
+            cols_fijas = 90 + 130 + 110 + 110 + 100 + 110 + 90 + 80 + 90 + 120 + 130
             resto = max(120, vw - cols_fijas)
-            t.setColumnWidth(0, 90)
-            t.setColumnWidth(2, 130)
-            t.setColumnWidth(3, 110)
-            t.setColumnWidth(4, 110)
-            t.setColumnWidth(6, 100)
-            t.setColumnWidth(7, 110)
-            t.setColumnWidth(8, 80)
-            t.setColumnWidth(9, 90)
-            t.setColumnWidth(10, 120)
-            t.setColumnWidth(11, 130)
-            t.setColumnWidth(1, int(resto * 0.55))
-            t.setColumnWidth(5, int(resto * 0.45))
+            t.setColumnWidth(0, 90)    # Fecha
+            t.setColumnWidth(2, 130)   # Documento
+            t.setColumnWidth(3, 110)   # EPS
+            t.setColumnWidth(4, 110)   # Tipo Afiliacion
+            t.setColumnWidth(6, 100)   # N Admision
+            t.setColumnWidth(7, 110)   # Cod Evento
+            t.setColumnWidth(8, 90)    # N Factura
+            t.setColumnWidth(9, 80)    # Valor
+            t.setColumnWidth(10, 90)   # Estado
+            t.setColumnWidth(11, 120)  # Registrado por
+            t.setColumnWidth(12, 130)  # Acciones
+            t.setColumnWidth(1, int(resto * 0.55))  # Paciente
+            t.setColumnWidth(5, int(resto * 0.45))  # Motivo
         else:
-            # 11 columnas sin "Registrado por"
-            cols_fijas = 90 + 130 + 110 + 110 + 100 + 80 + 90 + 130
+            # 12 columnas: sin "Registrado por"
+            # 0:Fecha 1:Paciente 2:Doc 3:EPS 4:Afil 5:Motivo
+            # 6:NAdm  7:CodEvento 8:NFact 9:Valor 10:Estado 11:Acc
+            cols_fijas = 90 + 130 + 110 + 110 + 100 + 110 + 90 + 80 + 90 + 130
             resto = max(120, vw - cols_fijas)
-            t.setColumnWidth(0, 90)
-            t.setColumnWidth(2, 130)
-            t.setColumnWidth(3, 110)
-            t.setColumnWidth(4, 110)
-            t.setColumnWidth(6, 100)
-            t.setColumnWidth(7, 110)
-            t.setColumnWidth(8, 80)
-            t.setColumnWidth(9, 90)
-            t.setColumnWidth(10, 130)
-            t.setColumnWidth(1, int(resto * 0.55))
-            t.setColumnWidth(5, int(resto * 0.45))
+            t.setColumnWidth(0, 90)    # Fecha
+            t.setColumnWidth(2, 130)   # Documento
+            t.setColumnWidth(3, 110)   # EPS
+            t.setColumnWidth(4, 110)   # Tipo Afiliacion
+            t.setColumnWidth(6, 100)   # N Admision
+            t.setColumnWidth(7, 110)   # Cod Evento
+            t.setColumnWidth(8, 90)    # N Factura
+            t.setColumnWidth(9, 80)    # Valor
+            t.setColumnWidth(10, 90)   # Estado
+            t.setColumnWidth(11, 130)  # Acciones
+            t.setColumnWidth(1, int(resto * 0.55))  # Paciente
+            t.setColumnWidth(5, int(resto * 0.45))  # Motivo
 
     def resizeEvent(self, e: QResizeEvent):
         super().resizeEvent(e)

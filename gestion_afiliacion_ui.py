@@ -27,7 +27,9 @@ import sys
 import io
 from functools import partial
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# Nota: la reasignacion de sys.stdout la maneja main.py al arrancar.
+# No se reasigna aqui para evitar "I/O operation on closed file"
+# cuando el modulo se importa de forma lazy dentro del proceso principal.
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,

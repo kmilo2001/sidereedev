@@ -34,8 +34,25 @@ import io
 import logging
 from typing import Optional
 
-# Forzar UTF-8 en stdout (Windows)
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# Forzar UTF-8 en stdout (Windows).
+# IMPORTANTE: verificar que stdout.buffer exista y no este cerrado
+# antes de reasignar, para evitar el error "I/O operation on closed file"
+# que ocurre cuando los modulos UI intentan reasignar sys.stdout en su
+# importacion y el buffer ya fue cerrado por una reasignacion previa.
+def _fijar_stdout_utf8() -> None:
+    try:
+        buf = getattr(sys.stdout, "buffer", None)
+        if buf is not None and not getattr(buf, "closed", False):
+            # Solo reasignar si aun no es un TextIOWrapper UTF-8
+            enc = getattr(sys.stdout, "encoding", "").lower()
+            if enc not in ("utf-8", "utf_8"):
+                sys.stdout = io.TextIOWrapper(
+                    buf, encoding="utf-8", errors="replace"
+                )
+    except Exception:
+        pass  # En entornos donde stdout no tiene buffer (pytest, etc.)
+
+_fijar_stdout_utf8()
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QStackedWidget,
@@ -384,6 +401,36 @@ class Sidebar(QWidget):
 
     # ── API publica ────────────────────────────────────────────
 
+    def actualizar_items(self, items: list[tuple[str, str]]):
+        """
+        Reemplaza los botones de navegacion con una nueva lista de items.
+        Llamado al cambiar de sesion / rol sin destruir la sidebar.
+        """
+        # Eliminar botones actuales
+        for b in self._btns:
+            b.setParent(None)
+            b.deleteLater()
+        self._btns.clear()
+        self._items = items
+
+        # Recrear botones en el layout de la seccion
+        # El layout de sec es el segundo item en root (idx 1)
+        # Buscamos la seccion por su widget hijo _sec_lbl
+        sec_lay = self._sec_lbl.parent().layout()
+        # Limpiar items de navegacion (dejar solo _sec_lbl)
+        while sec_lay.count() > 1:
+            item = sec_lay.takeAt(1)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for idx, (ico, lbl) in enumerate(items):
+            b = _NavBtn(ico, lbl)
+            b.setFixedWidth(220 if self._exp else 60)
+            b.set_expandido(self._exp)
+            b.clicked.connect(lambda checked=False, i=idx: self.nav_solicitado.emit(i))
+            self._btns.append(b)
+            sec_lay.addWidget(b)
+
     def set_activo(self, idx: int):
         for i, b in enumerate(self._btns):
             b.set_activo(i == idx)
@@ -432,6 +479,32 @@ class BottomNav(QWidget):
         self._btns: list[QPushButton] = []
         for idx, (ico, lbl) in enumerate(items):
             # Mostrar maximo 5 items; el resto en overflow
+            if idx >= 5: break
+            b = QPushButton(f"{ico}\n{lbl[:8]}")
+            b.setCheckable(True)
+            b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            b.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+            )
+            b.setStyleSheet(
+                f"QPushButton {{ background:{P['card']}; color:{P['txt2']};"
+                f"  border:none; padding:4px 2px; font-size:10px; font-weight:600; }}"
+                f"QPushButton:checked {{ color:{P['acc_h']};"
+                f"  border-top:2px solid {P['accent']}; }}"
+                f"QPushButton:hover {{ background:{P['input']}; }}"
+            )
+            b.clicked.connect(lambda checked=False, i=idx: self._on_click(i))
+            self._btns.append(b)
+            lay.addWidget(b)
+
+    def actualizar_items(self, items: list[tuple[str, str]]):
+        """Reemplaza los botones del bottom nav con la nueva lista de items."""
+        lay = self.layout()
+        for b in self._btns:
+            b.setParent(None)
+            b.deleteLater()
+        self._btns.clear()
+        for idx, (ico, lbl) in enumerate(items):
             if idx >= 5: break
             b = QPushButton(f"{ico}\n{lbl[:8]}")
             b.setCheckable(True)
@@ -510,6 +583,64 @@ class TopBar(QWidget):
         self._titulo.setText(nombre)
 
 
+def _wrap(widget: QWidget) -> QWidget:
+    """
+    Envuelve un Tab/Panel en un QWidget con fondo y margen cero,
+    para embeber correctamente en el QStackedWidget del shell.
+    El widget ocupa todo el espacio disponible.
+    """
+    container = QWidget()
+    container.setStyleSheet(f"background:{P['bg']};")
+    lay = QVBoxLayout(container)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(0)
+    lay.addWidget(widget, 1)
+    return container
+
+
+class _OpsLoader(QWidget):
+    """
+    Carga el modulo de Usuarios OPS instanciando PanelOps directamente.
+
+    obtener_tipos_documento() es una consulta SQL simple y rapida
+    (tabla pequena, sin joins pesados), por lo que corre en el hilo
+    principal sin afectar la experiencia del usuario.
+
+    Eliminar el hilo evita problemas con el sistema de senales de Qt
+    en Windows cuando QThread se define como clase anidada.
+    """
+
+    def __init__(self, ejecutor: dict, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"background:{P['bg']};")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        try:
+            import ops_backend as bk
+            from ops_ui import PanelOps
+
+            tipos = bk.obtener_tipos_documento()
+            if not isinstance(tipos, list):
+                tipos = []
+
+            panel = PanelOps(ejecutor, tipos, self)
+            lay.addWidget(panel, 1)
+
+        except Exception as e:
+            logger.error("Error al cargar modulo OPS: %s", e)
+            lbl = QLabel(
+                f"No se pudo cargar el modulo de usuarios OPS.\n\n{e}"
+            )
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(
+                f"color:{P['err']}; font-size:13px; background:transparent;"
+            )
+            lay.addWidget(lbl, 1)
+
+
 # ══════════════════════════════════════════════════════════════
 # VENTANA PRINCIPAL
 # ══════════════════════════════════════════════════════════════
@@ -584,14 +715,14 @@ class VentanaPrincipal(QMainWindow):
         root.setSpacing(0)
 
         # Fila horizontal: sidebar + contenido
-        h_row = QWidget()
-        h_row.setSizePolicy(
+        self._h_row = QWidget()
+        self._h_row.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        hl = QHBoxLayout(h_row)
+        hl = QHBoxLayout(self._h_row)
         hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(0)
 
-        # Sidebar (se instancia vacia; se rellena en cargar_sesion)
+        # Sidebar (vacia al inicio; se rellena en cargar_sesion)
         self._sidebar = Sidebar([])
         self._sidebar.nav_solicitado.connect(self._activar_modulo)
         hl.addWidget(self._sidebar)
@@ -608,7 +739,7 @@ class VentanaPrincipal(QMainWindow):
         rl.addWidget(self._stack, 1)
         hl.addWidget(right, 1)
 
-        root.addWidget(h_row, 1)
+        root.addWidget(self._h_row, 1)
 
         # Bottom nav (oculta por defecto)
         self._bottom = BottomNav([])
@@ -620,61 +751,52 @@ class VentanaPrincipal(QMainWindow):
 
     def cargar_sesion(self):
         """
-        Llama tras login exitoso. Construye la lista de modulos
-        segun el rol y carga el primer modulo activo.
+        Llama tras login exitoso. Reconstruye la lista de modulos segun
+        el rol activo y carga el primer modulo. Limpia el estado anterior
+        correctamente para permitir cerrar sesion y volver a entrar.
         """
         if _Sesion.es_maestro:
-            defs = self._MODULOS_MAESTRO
+            defs    = self._MODULOS_MAESTRO
             rol_txt = "Maestro"
         elif _Sesion.rol == "admin":
-            defs = self._MODULOS_ADMIN
+            defs    = self._MODULOS_ADMIN
             rol_txt = "Administrador"
         else:
-            defs = self._MODULOS_OPS
+            defs    = self._MODULOS_OPS
             rol_txt = "OPS"
 
         self._modulos_def = defs
+
+        # Limpiar modulos cargados previamente
         self._widgets_modulo.clear()
 
-        # Reconstruir sidebar y bottom nav con los items del rol
-        items = [(ico, lbl) for ico, lbl, _ in defs]
-        self._sidebar.deleteLater()
-        self._bottom.deleteLater()
-
-        self._sidebar = Sidebar(items)
-        self._sidebar.nav_solicitado.connect(self._activar_modulo)
-        self._sidebar.set_usuario(_Sesion.nombre, rol_txt)
-
-        self._bottom = BottomNav(items)
-        self._bottom.nav_solicitado.connect(self._activar_modulo)
-        self._bottom.hide()
-
-        # Reinsertar en el layout
-        central = self.centralWidget()
-        root: QVBoxLayout = central.layout()
-        h_row: QWidget    = root.itemAt(0).widget()
-        hl: QHBoxLayout   = h_row.layout()
-
-        # Limpiar stack
+        # Vaciar el stack
         while self._stack.count():
             w = self._stack.widget(0)
             self._stack.removeWidget(w)
             w.deleteLater()
 
-        # Placeholder para cada modulo (carga lazy)
+        # Insertar un placeholder por cada modulo (carga lazy)
         for _ in defs:
-            ph = QWidget(); ph.setStyleSheet(f"background:{P['bg']};")
+            ph = QWidget()
+            ph.setStyleSheet(f"background:{P['bg']};")
             self._stack.addWidget(ph)
 
-        # Insertar sidebar al principio del h_row
-        hl.insertWidget(0, self._sidebar)
-        root.addWidget(self._bottom)
+        # Actualizar sidebar y bottom nav con los items del rol
+        items = [(ico, lbl) for ico, lbl, _ in defs]
+        self._sidebar.actualizar_items(items)
+        self._sidebar.set_usuario(_Sesion.nombre, rol_txt)
+        self._bottom.actualizar_items(items)
 
         self._activar_modulo(0)
         self._aplicar_resize()
 
     def _activar_modulo(self, idx: int):
-        """Activa el modulo en el indice dado. Carga el widget si es la primera vez."""
+        """
+        Activa el modulo en el indice dado.
+        Carga el widget la primera vez (lazy); las siguientes solo cambia
+        el indice del stack sin crear ni destruir nada.
+        """
         if idx < 0 or idx >= len(self._modulos_def):
             return
         self._idx_activo = idx
@@ -683,99 +805,91 @@ class VentanaPrincipal(QMainWindow):
         self._sidebar.set_activo(idx)
         self._bottom.set_activo(idx)
 
-        # Carga lazy del modulo
+        # Carga lazy: solo crea el widget la primera vez que se navega a el
         if idx not in self._widgets_modulo:
             w = self._crear_modulo(clave)
             if w is None:
                 w = self._placeholder_error(clave)
-            self._widgets_modulo[idx] = w
-            self._stack.removeWidget(self._stack.widget(idx))
-            # Insertar en la posicion correcta
-            # QStackedWidget no tiene insertWidget, asi que reemplazamos
-            # el placeholder temporal con el widget real
+            # Reemplazar el placeholder temporal en el stack
+            ph = self._stack.widget(idx)
             self._stack.insertWidget(idx, w)
+            if ph is not None:
+                self._stack.removeWidget(ph)
+                ph.deleteLater()
+            self._widgets_modulo[idx] = w
 
         self._stack.setCurrentIndex(idx)
 
     def _crear_modulo(self, clave: str) -> QWidget | None:
         """
         Instancia el widget del modulo indicado segun el rol activo.
-        Retorna None si el modulo no esta disponible para este rol.
+
+        REGLA CRITICA: nunca embeber Window completas (EventosWindow,
+        ReportesWindow, etc.) porque traen su propia sidebar y topbar
+        integradas, lo que genera sidebar duplicada dentro del shell.
+
+        En su lugar se usan los Tab/Panel internos de cada modulo:
+          TabEventos, TabReportes, TabEps, TabEpsOps, TabAfiliacion,
+          PanelOps, PanelEntidad, PanelPacientes.
+
+        Los modulos se envuelven en _wrap() para darles margen y
+        fondo consistentes con el shell.
         """
-        ejecutor    = _Sesion.construir_ejecutor()
-        entidad_id  = _Sesion.entidad_id
-        ops_id      = _Sesion.ops_id
-        nombre      = _Sesion.nombre
-        rol         = "maestro" if _Sesion.es_maestro else _Sesion.rol
+        ejecutor   = _Sesion.construir_ejecutor()
+        entidad_id = _Sesion.entidad_id
+        ops_id     = _Sesion.ops_id
+        nombre     = _Sesion.nombre
+        rol        = "maestro" if _Sesion.es_maestro else _Sesion.rol
 
         try:
-            # ── Entidades (solo maestro) ───────────────────────
+            # ── Entidades (solo maestro) ───────────────────────────
             if clave == "entidades":
-                from entidad_ui import EntidadWindow
-                return EntidadWindow(ops_id=ops_id)
+                from entidad_ui import PanelEntidad
+                return PanelEntidad(ops_id=ops_id)
 
-            # ── Usuarios OPS ───────────────────────────────────
+            # ── Usuarios OPS ───────────────────────────────────────
             elif clave == "ops":
-                from ops_ui import OpsWindow
-                return OpsWindow(ejecutor=ejecutor)
+                # PanelOps necesita tipos_doc; se carga en _OpsLoader
+                # para no bloquear el hilo principal.
+                return _OpsLoader(ejecutor)
 
-            # ── EPS (admin / maestro) ──────────────────────────
+            # ── EPS (admin / maestro) ──────────────────────────────
             elif clave == "eps":
-                from gestion_eps_ui import EpsWindow
-                return EpsWindow(
-                    entidad_id=entidad_id, rol=rol,
-                    ops_id=ops_id, nombre_usuario=nombre,
-                )
+                from gestion_eps_ui import TabEps
+                return _wrap(TabEps(rol=rol, entidad_id=entidad_id, ops_id=ops_id))
 
-            # ── EPS (vista OPS) ────────────────────────────────
+            # ── EPS (vista OPS regular) ────────────────────────────
             elif clave == "eps_ops":
-                from gestion_eps_ops_ui import EpsOpsWindow
-                return EpsOpsWindow(
-                    entidad_id=entidad_id,
-                    ops_id=ops_id,
-                    nombre_usuario=nombre,
-                )
+                from gestion_eps_ops_ui import TabEpsOps
+                return _wrap(TabEpsOps(entidad_id=entidad_id, ops_id=ops_id))
 
-            # ── Pacientes ──────────────────────────────────────
+            # ── Pacientes ──────────────────────────────────────────
             elif clave == "pacientes":
-                from pacientes_ui import PacientesWindow
-                return PacientesWindow(ejecutor=ejecutor, entidad_id=entidad_id)
+                from pacientes_ui import PanelPacientes
+                return PanelPacientes(ejecutor=ejecutor, entidad_id=entidad_id)
 
-            # ── Afiliaciones ───────────────────────────────────
+            # ── Afiliaciones ───────────────────────────────────────
             elif clave == "afiliaciones":
-                from gestion_afiliacion_ui import AfiliacionWindow
-                return AfiliacionWindow(
-                    entidad_id=entidad_id,
-                    rol=rol,
-                    ops_id=ops_id,
-                    nombre_usuario=nombre,
-                )
+                from gestion_afiliacion_ui import TabAfiliacion
+                return _wrap(TabAfiliacion(entidad_id=entidad_id))
 
-            # ── Eventos ────────────────────────────────────────
+            # ── Eventos ────────────────────────────────────────────
             elif clave == "eventos":
-                from gestion_eventos_ui import EventosWindow
-                return EventosWindow(
-                    rol=rol,
-                    entidad_id=entidad_id,
-                    ops_id=ops_id,
-                    nombre_usuario=nombre,
-                )
+                from gestion_eventos_ui import TabEventos
+                return _wrap(TabEventos(rol=rol, entidad_id=entidad_id, ops_id=ops_id))
 
-            # ── Reportes ───────────────────────────────────────
+            # ── Reportes ───────────────────────────────────────────
             elif clave == "reportes":
-                from gestion_reportes_ui import ReportesWindow
-                return ReportesWindow(
-                    rol=rol,
-                    entidad_id=entidad_id,
-                    ops_id=ops_id,
-                    nombre_usuario=nombre,
-                    ops_nombre=nombre,
+                from gestion_reportes_ui import TabReportes
+                return _wrap(
+                    TabReportes(
+                        rol=rol, entidad_id=entidad_id,
+                        ops_id=ops_id, ops_nombre=nombre,
+                    )
                 )
 
-            # ── Configuracion conexion ─────────────────────────
+            # ── Configuracion conexion ─────────────────────────────
             elif clave == "config":
-                from config_conexion_ui import ConfigConexionDialog
-                # Para la seccion de ajustes mostramos un wrapper
                 return _ConfigWrapper()
 
             else:
@@ -920,90 +1034,159 @@ class _ConfigWrapper(QWidget):
 class AppController:
     """
     Coordina el ciclo de vida completo de la aplicacion:
-      1. Verificar/configurar la conexion a BD.
+      1. Verificar / configurar la conexion a BD.
       2. Mostrar el Login.
       3. Al login exitoso, mostrar la VentanaPrincipal.
-      4. Al cerrar sesion, volver al Login (sin reiniciar el proceso).
+      4. Al cerrar sesion, volver al Login — sin reiniciar el proceso.
+
+    El LoginWindow se crea UNA sola vez y se oculta/muestra segun el estado.
+    La VentanaPrincipal tambien se crea una sola vez y recibe cargar_sesion()
+    cada vez que el usuario hace login (puede ser distinto usuario/rol).
     """
 
     def __init__(self, app: QApplication):
-        self._app = app
-        self._login_win:   "LoginWindow | None"       = None
-        self._main_win:    "VentanaPrincipal | None"  = None
+        self._app       = app
+        self._login_win: Optional["LoginWindow"]      = None
+        self._main_win:  Optional["VentanaPrincipal"] = None
+
+    # ── Arranque ───────────────────────────────────────────────
 
     def iniciar(self):
         """Punto de entrada: verificar BD y mostrar login."""
         self._verificar_conexion()
 
+    # ── BD ─────────────────────────────────────────────────────
+
     def _verificar_conexion(self):
         """
         Verifica que la conexion a BD este configurada.
         Si no existe config o la conexion falla, abre el dialogo.
+        Al terminar (exito o no) siempre muestra el Login.
         """
         try:
             from config_conexion_ui import mostrar_config_si_necesario
             ok = mostrar_config_si_necesario(self._app)
             if not ok:
-                # El usuario cancelo la configuracion -> salir
-                QMessageBox.critical(
+                resp = QMessageBox.question(
                     None,
                     "Sin conexion",
-                    "No se pudo establecer conexion con la base de datos.\n"
-                    "El sistema no puede iniciar.",
+                    "No se pudo establecer conexion con la base de datos.\n\n"
+                    "Deseas intentar configurarla ahora?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
-                self._app.quit()
-                return
+                if resp == QMessageBox.StandardButton.No:
+                    self._app.quit()
+                    return
         except ImportError:
-            # Si config_conexion_ui no esta disponible, continuar igual
-            logger.warning("config_conexion_ui no disponible. Continuando sin verificacion.")
+            logger.warning(
+                "config_conexion_ui no disponible. Continuando sin verificacion."
+            )
 
         self._mostrar_login()
 
+    # ── Login ──────────────────────────────────────────────────
+
     def _mostrar_login(self):
-        """Crea y muestra la ventana de Login."""
+        """
+        Muestra la ventana de Login.
+        Si ya existe la reutiliza; si no, la crea.
+        Al reutilizar limpia los campos y el status bar para que
+        el usuario vea el formulario limpio tras cerrar sesion.
+        """
         try:
             from login_ui import LoginWindow
-            self._login_win = LoginWindow()
-            self._login_win.login_exitoso.connect(self._on_login_exitoso)
-            self._login_win.show()
         except ImportError as e:
             QMessageBox.critical(
                 None, "Error critico",
                 f"No se pudo cargar el modulo de login:\n{e}"
             )
             self._app.quit()
+            return
+
+        if self._login_win is None:
+            self._login_win = LoginWindow()
+            # Conectar la señal SOLO la primera vez que se crea
+            self._login_win.login_exitoso.connect(self._on_login_exitoso)
+        else:
+            # Limpiar formulario para la proxima sesion
+            self._limpiar_formulario_login()
+
+        self._login_win.show()
+        self._login_win.raise_()
+        self._login_win.activateWindow()
+
+    def _limpiar_formulario_login(self):
+        """
+        Limpia los campos del formulario de login y oculta mensajes
+        de error para que el usuario vea un formulario en blanco.
+        """
+        win = self._login_win
+        if win is None:
+            return
+        try:
+            # Limpiar campo documento
+            if hasattr(win, "f_doc"):
+                win.f_doc.input.clear() if hasattr(win.f_doc, "input") \
+                    else win.f_doc.clear()
+            # Limpiar campo password
+            if hasattr(win, "f_pw"):
+                win.f_pw.input.clear() if hasattr(win.f_pw, "input") \
+                    else win.f_pw.clear()
+            # Ocultar mensajes de error/estado
+            if hasattr(win, "status"):
+                win.status.ocultar() if hasattr(win.status, "ocultar") \
+                    else win.status.hide()
+            # Rehabilitar boton login (puede quedar deshabilitado si hubo error)
+            if hasattr(win, "btn_login"):
+                win.btn_login.setEnabled(True)
+                win.btn_login.setText("Iniciar sesión")
+        except Exception as e:
+            logger.debug("No se pudo limpiar formulario login: %s", e)
+
+    # ── Login exitoso ──────────────────────────────────────────
 
     def _on_login_exitoso(self, datos: dict):
-        """Callback del login exitoso. Carga la sesion y muestra el shell."""
+        """
+        Callback del Signal login_exitoso de LoginWindow.
+        Carga la sesion y muestra la VentanaPrincipal.
+        """
         logger.info(
             "Login exitoso — rol=%s nombre=%s",
-            datos.get("rol"), datos.get("nombre")
+            datos.get("rol"), datos.get("nombre"),
         )
         _Sesion.cargar(datos)
 
-        # Crear ventana principal si no existe
+        # Ocultar login ANTES de mostrar la ventana principal
+        if self._login_win:
+            self._login_win.hide()
+
+        # Crear VentanaPrincipal una sola vez
         if self._main_win is None:
             self._main_win = VentanaPrincipal()
             self._main_win.sesion_cerrada.connect(self._on_sesion_cerrada)
 
+        # Reconfigurar para el nuevo usuario/rol
         self._main_win.cargar_sesion()
         self._main_win.show()
+        self._main_win.raise_()
+        self._main_win.activateWindow()
 
-        # Ocultar login
-        if self._login_win:
-            self._login_win.hide()
+    # ── Cierre de sesion ───────────────────────────────────────
 
     def _on_sesion_cerrada(self):
-        """Al cerrar sesion, ocultar el shell y mostrar el login de nuevo."""
+        """
+        Al cerrar sesion:
+          1. Ocultar la VentanaPrincipal completamente.
+          2. Mostrar el Login con formulario limpio.
+        La sesion ya fue limpiada en VentanaPrincipal._cerrar_sesion().
+        """
         logger.info("Sesion cerrada — volviendo al login.")
-        if self._main_win:
+
+        if self._main_win is not None:
             self._main_win.hide()
 
-        # Reutilizar el login existente o crear uno nuevo
-        if self._login_win is None:
-            self._mostrar_login()
-        else:
-            self._login_win.show()
+        # Mostrar login (limpia formulario si ya existia)
+        self._mostrar_login()
 
 
 # ══════════════════════════════════════════════════════════════

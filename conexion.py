@@ -13,12 +13,33 @@
 
 import sys
 import io
+import os
 import psycopg2
 from psycopg2 import OperationalError
 from psycopg2.extras import RealDictCursor
 
-# Forzar salida UTF-8 en Windows (evita UnicodeEncodeError con cp1252)
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# ── Manejo seguro de stdout/stderr ────────────────────────────
+# Con --noconsole (PyInstaller), sys.stdout y sys.stderr son None.
+# Cualquier print() crashea con: 'NoneType' has no attribute 'buffer'.
+# Solucion: redirigir a devnull si no hay consola, o forzar UTF-8 si si hay.
+def _fijar_streams() -> None:
+    try:
+        # Si no hay consola (exe compilado sin consola): redirigir a devnull
+        if sys.stdout is None:
+            _null = open(os.devnull, "w", encoding="utf-8")
+            sys.stdout = _null
+            sys.stderr = _null
+            return
+        # Si hay consola: garantizar UTF-8 para evitar UnicodeEncodeError
+        buf = getattr(sys.stdout, "buffer", None)
+        if buf is not None and not getattr(buf, "closed", False):
+            enc = getattr(sys.stdout, "encoding", "").lower()
+            if enc not in ("utf-8", "utf_8"):
+                sys.stdout = io.TextIOWrapper(buf, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+_fijar_streams()
 
 
 # ---------------------------------------------------------------------------

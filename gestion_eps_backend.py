@@ -162,6 +162,8 @@ def listar_eps(
                     COALESCE(e.direccion, '')                     AS direccion,
                     COALESCE(e.tipo,      'EPS')                  AS tipo,
                     e.activo,
+                    e.creado_por_ops,
+                    COALESCE(u.nombre_completo, '')               AS creado_por_ops_nombre,
                     public.eps_tiene_contrato(
                         e.entidad_id, e.id, CURRENT_DATE
                     )                                             AS tiene_contrato,
@@ -170,6 +172,7 @@ def listar_eps(
                     to_char(e.actualizado_en AT TIME ZONE 'America/Bogota',
                             'DD/MM/YYYY HH24:MI')                 AS ultima_actualizacion
                 FROM  public.eps e
+                LEFT  JOIN public.usuario_ops u ON u.id = e.creado_por_ops
                 WHERE {where}
                 ORDER BY e.nombre
                 LIMIT  %s

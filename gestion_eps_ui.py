@@ -124,7 +124,7 @@ _CSS_LINE = (
 )
 
 # Indices de columnas (modo escritorio)
-_CC, _CN, _CNIT, _CM, _CT, _CE, _CCON, _CA = 0, 1, 2, 3, 4, 5, 6, 7
+_CC, _CN, _CNIT, _CM, _CT, _CREG, _CE, _CCON, _CA = 0, 1, 2, 3, 4, 5, 6, 7, 8
 
 
 # ══════════════════════════════════════════════════════════════
@@ -408,6 +408,7 @@ class DialogEpsVer(BaseDialog):
             ("Telefono",         d.get("telefono","")       or "—"),
             ("Direccion",        d.get("direccion","")      or "—"),
             ("Digitado por",     d.get("digitado_por","")   or "—"),
+            ("Registrado por",   d.get("creado_por_ops_nombre","") or "—"),
             ("Estado",           "Activa" if d.get("activo") else "Inactiva"),
             ("Creado",           d.get("fecha_creacion","") or "—"),
             ("Actualizado",      d.get("ultima_actualizacion","") or "—"),
@@ -700,7 +701,7 @@ class TabEps(QWidget):
         # Tabla
         self.tabla = _make_table([
             "Codigo", "Nombre", "NIT", "Municipio", "Tipo",
-            "Estado", "Contrato", "Acciones"
+            "Registrado por", "Estado", "Contrato", "Acciones"
         ])
         self.tabla.customContextMenuRequested.connect(self._ctx_fila)
         root.addWidget(self.tabla, 1)
@@ -721,10 +722,10 @@ class TabEps(QWidget):
     def _vis_cols(self, modo: str):
         hdr = self.tabla.horizontalHeader()
         if modo == "compacto":
-            ocultas = {_CC, _CNIT, _CM, _CT, _CCON}
+            ocultas = {_CC, _CNIT, _CM, _CT, _CREG, _CCON}
             self.btn_nueva.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         elif modo == "tablet":
-            ocultas = {_CM, _CT, _CCON}
+            ocultas = {_CM, _CT, _CREG, _CCON}
             self.btn_nueva.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         else:
             ocultas = set()
@@ -741,10 +742,10 @@ class TabEps(QWidget):
             self.tabla.setColumnWidth(_CC, 90); self.tabla.setColumnWidth(_CNIT, 110)
             self.tabla.setColumnWidth(_CE, 90); self.tabla.setColumnWidth(_CA, 52)
         else:
-            self.tabla.setColumnWidth(_CC, 90); self.tabla.setColumnWidth(_CNIT, 120)
-            self.tabla.setColumnWidth(_CM, 110); self.tabla.setColumnWidth(_CT, 110)
-            self.tabla.setColumnWidth(_CE, 90); self.tabla.setColumnWidth(_CCON, 115)
-            self.tabla.setColumnWidth(_CA, 52)
+            self.tabla.setColumnWidth(_CC, 90);  self.tabla.setColumnWidth(_CNIT, 120)
+            self.tabla.setColumnWidth(_CM, 110);  self.tabla.setColumnWidth(_CT, 110)
+            self.tabla.setColumnWidth(_CREG, 130); self.tabla.setColumnWidth(_CE, 90)
+            self.tabla.setColumnWidth(_CCON, 115); self.tabla.setColumnWidth(_CA, 52)
 
     # ── Carga ─────────────────────────────────────────────────
 
@@ -758,11 +759,17 @@ class TabEps(QWidget):
         self.tabla.setRowCount(0)
         for d in datos:
             r = self.tabla.rowCount(); self.tabla.insertRow(r)
-            self.tabla.setItem(r, _CC,   _item(d.get("codigo","")     or "—"))
-            self.tabla.setItem(r, _CN,   _item(d.get("nombre","")     or "—"))
-            self.tabla.setItem(r, _CNIT, _item(d.get("nit","")        or "—"))
-            self.tabla.setItem(r, _CM,   _item(d.get("municipio","")  or "—"))
-            self.tabla.setItem(r, _CT,   _item(d.get("tipo","")       or "—"))
+            self.tabla.setItem(r, _CC,   _item(d.get("codigo","")    or "—"))
+            self.tabla.setItem(r, _CN,   _item(d.get("nombre","")    or "—"))
+            self.tabla.setItem(r, _CNIT, _item(d.get("nit","")       or "—"))
+            self.tabla.setItem(r, _CM,   _item(d.get("municipio","") or "—"))
+            self.tabla.setItem(r, _CT,   _item(d.get("tipo","")      or "—"))
+            # Registrado por: nombre del OPS o Maestro que creó el registro
+            reg_nom = d.get("creado_por_ops_nombre") or "—"
+            it_reg  = _item(reg_nom)
+            from PySide6.QtGui import QColor as _QColor
+            it_reg.setForeground(_QColor(P["txt2"]))
+            self.tabla.setItem(r, _CREG, it_reg)
             self.tabla.setCellWidget(r, _CE,   _tag_estado(d.get("activo", True)))
             self.tabla.setCellWidget(r, _CCON, _tag_contrato(d.get("tiene_contrato", False)))
             self.tabla.setCellWidget(r, _CA,   self._celda_acc(d))

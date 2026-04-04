@@ -35,9 +35,9 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QAbstractItemView,
     QStackedWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QButtonGroup,
-    QRadioButton, QFileDialog, QComboBox,
+    QRadioButton, QFileDialog, QComboBox, QProgressBar,
 )
-from PySide6.QtCore import Qt, Signal, QThread, QTimer
+from PySide6.QtCore import Qt, Signal, QThread, QTimer, Q_ARG, QMetaObject
 from PySide6.QtGui import QCursor, QColor, QResizeEvent
 
 import pacientes_backend as pbk
@@ -223,7 +223,8 @@ def _it(text):
 # ══════════════════════════════════════════════════════════════
 
 class _Worker(QThread):
-    done = Signal(object)
+    done     = Signal(object)
+    progreso = Signal(int, int)   # procesadas, total
 
     def __init__(self, fn, args, kw):
         super().__init__()
@@ -232,6 +233,10 @@ class _Worker(QThread):
 
     def run(self):
         try:
+            import inspect
+            sig = inspect.signature(self._fn)
+            if "on_progreso" in sig.parameters:
+                self._kw["on_progreso"] = lambda p, t: self.progreso.emit(p, t)
             self.done.emit(self._fn(*self._args, **self._kw))
         except Exception as e:
             self.done.emit(pbk.Resultado(False, str(e)))
@@ -240,13 +245,125 @@ class _Worker(QThread):
 _workers: list = []
 
 
-def run_async(fn, *args, on_done=None, **kw):
+def run_async(fn, *args, on_done=None, on_progreso=None, **kw):
     w = _Worker(fn, args, kw)
     _workers.append(w)
     if on_done:
         w.done.connect(on_done)
+    if on_progreso:
+        w.progreso.connect(on_progreso)
     w.done.connect(lambda _: _workers.remove(w) if w in _workers else None)
     w.start()
+    return w
+
+
+# ══════════════════════════════════════════════════════════════
+# DIÁLOGO DE PROGRESO (carga masiva) — no bloqueante
+# ══════════════════════════════════════════════════════════════
+
+class DialogProgresoCarga(QDialog):
+    """
+    Ventana de progreso NO modal para la carga masiva.
+    - Muestra barra de progreso real con porcentaje.
+    - La X funciona: el usuario puede cerrarla sin detener la carga.
+    - Se cierra automáticamente al terminar si no fue cerrada antes.
+    - El botón cambia de "Cancelar" a "Ver resultado" al terminar.
+    """
+
+    def __init__(self, nombre_archivo: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Carga masiva en progreso")
+        self.setModal(False)
+        self.setMinimumWidth(460)
+        self._terminado = False
+        self._resultado_pendiente: pbk.Resultado | None = None
+
+        C_local = {
+            "bg": "#080E18", "panel": "#0B1220", "card": "#0F1828",
+            "input": "#162030", "border": "#1E3050", "border_f": "#0EA5E9",
+            "accent": "#0369A1", "acc_h": "#0EA5E9",
+            "t1": "#E8F4FD", "t2": "#7DB8D9", "t3": "#1E4060",
+        }
+
+        self.setStyleSheet(
+            f"QWidget{{background:{C_local['bg']};color:{C_local['t1']};"
+            f"font-family:'Exo 2','Segoe UI',sans-serif;font-size:13px;}}"
+            f"QProgressBar{{background:{C_local['input']};"
+            f"border:1.5px solid {C_local['border']};border-radius:8px;"
+            f"height:20px;text-align:center;color:{C_local['t1']};}}"
+            f"QProgressBar::chunk{{background:{C_local['accent']};border-radius:7px;}}"
+        )
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
+        self._lbl_titulo = QLabel("⟳  Procesando carga masiva...")
+        self._lbl_titulo.setStyleSheet(
+            f"color:{C_local['t1']};font-size:14px;font-weight:700;"
+        )
+        lay.addWidget(self._lbl_titulo)
+
+        lbl_arch = QLabel(f"Archivo: {nombre_archivo}")
+        lbl_arch.setStyleSheet(f"color:{C_local['t2']};font-size:11px;")
+        lbl_arch.setWordWrap(True)
+        lay.addWidget(lbl_arch)
+
+        self._barra = QProgressBar()
+        self._barra.setRange(0, 100)
+        self._barra.setValue(0)
+        self._barra.setFormat("Iniciando...")
+        self._barra.setMinimumHeight(22)
+        lay.addWidget(self._barra)
+
+        self._lbl_cnt = QLabel("Preparando archivo...")
+        self._lbl_cnt.setStyleSheet(f"color:{C_local['t2']};font-size:12px;")
+        lay.addWidget(self._lbl_cnt)
+
+        self._lbl_nota = QLabel(
+            "Puedes cerrar esta ventana — la carga continúa en segundo plano."
+        )
+        self._lbl_nota.setWordWrap(True)
+        self._lbl_nota.setStyleSheet(f"color:{C_local['t3']};font-size:11px;")
+        lay.addWidget(self._lbl_nota)
+
+        self._btn_cerrar = QPushButton("Cerrar ventana")
+        self._btn_cerrar.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._btn_cerrar.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{C_local['t2']};"
+            f"border:1.5px solid {C_local['border']};border-radius:8px;"
+            f"padding:8px 16px;font-size:13px;}}"
+            f"QPushButton:hover{{border-color:{C_local['border_f']};"
+            f"color:{C_local['t1']};background:{C_local['input']};}}"
+        )
+        self._btn_cerrar.clicked.connect(self.accept)
+        lay.addWidget(self._btn_cerrar)
+
+        self.adjustSize()
+
+    def actualizar(self, procesadas: int, total: int):
+        """Llamado desde el worker vía señal progreso."""
+        if total <= 0:
+            return
+        pct = int(procesadas * 100 / total)
+        self._barra.setValue(pct)
+        self._barra.setFormat(f"{pct}%")
+        self._lbl_cnt.setText(f"{procesadas:,} / {total:,} filas procesadas")
+
+    def marcar_completado(self):
+        """Indica que la carga terminó — cambia el título y el botón."""
+        self._terminado = True
+        self._lbl_titulo.setText("✓  Carga completada")
+        self._barra.setValue(100)
+        self._barra.setFormat("100% — Completado")
+        self._lbl_nota.setText("La carga ha finalizado correctamente.")
+        self._btn_cerrar.setText("Ver resultado")
+        self._btn_cerrar.setStyleSheet(
+            f"QPushButton{{background:#0369A1;color:white;"
+            f"border:none;border-radius:8px;"
+            f"padding:8px 16px;font-size:13px;font-weight:700;}}"
+            f"QPushButton:hover{{background:#0EA5E9;}}"
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -639,7 +756,11 @@ class DialogVerPaciente(BaseDialog):
 
         fc = str(d.get("creado_en", ""))[:19]
         fa = str(d.get("actualizado_en", ""))[:19]
-        lay.addWidget(lbl(f"Creado: {fc}   |   Actualizado: {fa}", size=11, color=C["t3"]))
+        reg_por = d.get("creado_por_ops_nombre", "")
+        meta_txt = f"Creado: {fc}   |   Actualizado: {fa}"
+        if reg_por:
+            meta_txt += f"   |   Registrado por: {reg_por}"
+        lay.addWidget(lbl(meta_txt, size=11, color=C["t3"], wrap=True))
         lay.addSpacing(14)
 
         bc = btn("Cerrar", "secondary")
@@ -1052,14 +1173,25 @@ def _badge_activo(activo: bool) -> QWidget:
 
 #  (encabezado, ancho_fijo, visible_en_narrow)
 _COLS = [
-    ("Tipo",       55,  True),
-    ("Documento",  110, True),
-    ("Nombre",     0,   True),   # stretch
-    ("EPS",        120, False),
-    ("Afiliacion", 110, False),
-    ("Estado",     80,  True),
-    ("Acciones",   130, True),
+    ("Tipo",          55,  True),
+    ("Documento",     110, True),
+    ("Nombre",        0,   True),   # stretch
+    ("EPS",           120, False),
+    ("Afiliacion",    110, False),
+    ("Registrado por",120, False),  # creado_por_ops_nombre — visible en pantallas anchas
+    ("Estado",        80,  True),
+    ("Acciones",      130, True),
 ]
+
+# Índices de columna — se usan en _poblar_tabla y _ajustar_cols
+_CI_TIPO  = 0
+_CI_DOC   = 1
+_CI_NOM   = 2
+_CI_EPS   = 3
+_CI_AFIL  = 4
+_CI_REG   = 5   # Registrado por
+_CI_EST   = 6
+_CI_ACC   = 7
 
 
 def _nueva_tabla() -> QTableWidget:
@@ -1072,10 +1204,10 @@ def _nueva_tabla() -> QTableWidget:
     t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     t.verticalHeader().setVisible(False)
     t.horizontalHeader().setStretchLastSection(False)
-    # Col 2 (Nombre) estira
-    t.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+    # Col _CI_NOM (Nombre) estira
+    t.horizontalHeader().setSectionResizeMode(_CI_NOM, QHeaderView.ResizeMode.Stretch)
     for i, (_, w, _) in enumerate(_COLS):
-        if i != 2 and w > 0:
+        if i != _CI_NOM and w > 0:
             t.setColumnWidth(i, w)
             t.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
     t.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1085,7 +1217,7 @@ def _nueva_tabla() -> QTableWidget:
 def _ajustar_cols(tabla: QTableWidget, ancho: int):
     narrow = ancho < BP_NARROW
     for i, (_, _, visible) in enumerate(_COLS):
-        if i == 2:
+        if i == _CI_NOM:
             continue
         tabla.setColumnHidden(i, not visible and narrow)
 
@@ -1490,8 +1622,8 @@ class PanelPacientes(QWidget):
         for d in self._datos:
             r = t.rowCount()
             t.insertRow(r)
-            t.setItem(r, 0, _it(d.get("tipo_doc", "")))
-            t.setItem(r, 1, _it(d.get("numero_documento", "")))
+            t.setItem(r, _CI_TIPO, _it(d.get("tipo_doc", "")))
+            t.setItem(r, _CI_DOC,  _it(d.get("numero_documento", "")))
             nombre = " ".join(filter(None, [
                 d.get("primer_nombre"), d.get("segundo_nombre"),
                 d.get("primer_apellido"), d.get("segundo_apellido")
@@ -1499,14 +1631,19 @@ class PanelPacientes(QWidget):
             it_nom = _it(nombre)
             if not d.get("activo", True):
                 it_nom.setForeground(QColor(C["t3"]))
-            t.setItem(r, 2, it_nom)
+            t.setItem(r, _CI_NOM, it_nom)
             eps_txt = d.get("eps_nombre", "")
             if d.get("eps_codigo"):
                 eps_txt = f"[{d['eps_codigo']}] {eps_txt}"
-            t.setItem(r, 3, _it(eps_txt or "—"))
-            t.setItem(r, 4, _it(d.get("tipo_afiliacion") or "—"))
-            t.setCellWidget(r, 5, _badge_activo(d.get("activo", True)))
-            t.setCellWidget(r, 6, _botones_fila(d, cb))
+            t.setItem(r, _CI_EPS,  _it(eps_txt or "—"))
+            t.setItem(r, _CI_AFIL, _it(d.get("tipo_afiliacion") or "—"))
+            # Quién lo registró (Maestro u OPS)
+            registrado_por = d.get("creado_por_ops_nombre") or "—"
+            it_reg = _it(registrado_por)
+            it_reg.setForeground(QColor(C["t2"]))
+            t.setItem(r, _CI_REG, it_reg)
+            t.setCellWidget(r, _CI_EST, _badge_activo(d.get("activo", True)))
+            t.setCellWidget(r, _CI_ACC, _botones_fila(d, cb))
             t.setRowHeight(r, 46)
 
     def _poblar_tarjetas(self):
@@ -1627,23 +1764,43 @@ class PanelPacientes(QWidget):
             return
 
         self._header._btn_filtro.setEnabled(False)
-        msg_proc = QMessageBox(self)
-        msg_proc.setWindowTitle("Procesando...")
-        msg_proc.setText("Procesando carga masiva. Por favor espere...")
-        msg_proc.setStandardButtons(QMessageBox.StandardButton.NoButton)
-        msg_proc.show()
-        QApplication.processEvents()
+
+        # Ventana de progreso NO bloqueante (tiene X funcional)
+        dlg_prog = DialogProgresoCarga(Path(ruta).name, self)
+        dlg_prog.show()
+
+        def on_progreso(procesadas: int, total: int):
+            dlg_prog.actualizar(procesadas, total)
 
         def done(res: pbk.Resultado):
-            msg_proc.close()
+            # Marcar como completado en el diálogo de progreso
+            dlg_prog.marcar_completado()
             self._header._btn_filtro.setEnabled(True)
-            DialogResultadoCarga(res, self).exec()
             self._cargar()
+
+            # Si el diálogo ya fue cerrado por el usuario, abrir resultado
+            # directamente. Si sigue abierto, esperar a que haga clic en
+            # "Ver resultado" — reconectar el botón para mostrar el resultado.
+            def _mostrar_resultado():
+                dlg_prog.close()
+                DialogResultadoCarga(res, self).exec()
+
+            # Reconectar el botón del diálogo de progreso
+            try:
+                dlg_prog._btn_cerrar.clicked.disconnect()
+            except Exception:
+                pass
+            dlg_prog._btn_cerrar.clicked.connect(_mostrar_resultado)
+
+            # Si el usuario ya cerró el diálogo, mostrar resultado de inmediato
+            if not dlg_prog.isVisible():
+                QTimer.singleShot(0, lambda: DialogResultadoCarga(res, self).exec())
 
         run_async(
             pbk.procesar_carga_masiva,
             self._ejecutor, self._eid, ruta,
             on_done=done,
+            on_progreso=on_progreso,
         )
 
     def _plantilla(self):

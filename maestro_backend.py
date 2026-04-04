@@ -143,6 +143,82 @@ def obtener_perfil_maestro(ops_id: int) -> dict | None:
         return None
 
 
+# ──────────────────────────────────────────────────────────────
+# LOGIN DEL MAESTRO
+# ──────────────────────────────────────────────────────────────
+
+def login_maestro(numero_documento: str, password_plain: str) -> Resultado:
+    """
+    Autentica al Maestro exclusivamente contra usuario_ops.
+    No usa tipo_documento para el enrutamiento — busca directamente
+    por numero_documento + nombre_completo ILIKE 'maestro%'.
+
+    Retorna Resultado con datos = {
+        'ops_id':         int,
+        'entidad_id':     int,
+        'nombre':         str,
+        'nombre_entidad': str,
+        'correo':         str,
+        'rol':            'maestro',
+        'es_maestro':     True
+    }
+    """
+    if not numero_documento or not password_plain:
+        return Resultado(False, "Documento y contraseña son obligatorios.")
+    try:
+        with Conexion(dict_cursor=True) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT u.id        AS ops_id,
+                       u.password_hash,
+                       u.nombre_completo AS nombre,
+                       u.correo,
+                       u.activo,
+                       u.entidad_id,
+                       e.nombre_entidad
+                FROM   public.usuario_ops u
+                JOIN   public.entidad e ON e.id = u.entidad_id
+                WHERE  u.numero_documento = %s
+                  AND  LOWER(u.nombre_completo) LIKE 'maestro%%'
+                  AND  u.activo = TRUE
+                LIMIT  1
+                """,
+                (numero_documento.strip(),),
+            )
+            row = cur.fetchone()
+
+        if not row:
+            return Resultado(
+                False,
+                "No se encontró un usuario Maestro activo con ese documento.",
+            )
+
+        if not bcrypt.checkpw(
+            password_plain.encode("utf-8"),
+            row["password_hash"].encode("utf-8"),
+        ):
+            return Resultado(False, "Contraseña incorrecta.")
+
+        return Resultado(
+            ok=True,
+            mensaje="Autenticación exitosa.",
+            datos={
+                "ops_id":         row["ops_id"],
+                "entidad_id":     row["entidad_id"],
+                "nombre":         row["nombre"],
+                "nombre_entidad": row["nombre_entidad"],
+                "correo":         row["correo"],
+                "rol":            "maestro",
+                "es_maestro":     True,
+            },
+        )
+
+    except Exception as e:
+        logger.error("Error en login_maestro: %s", e)
+        return Resultado(False, f"Error de conexión: {e}")
+
+
 # =============================================================================
 # MODULO 1: GESTION DE ENTIDADES (exclusivo Maestro)
 # =============================================================================

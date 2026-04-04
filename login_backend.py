@@ -9,8 +9,11 @@
 #     sesion, token_recuperacion  (gestion_eventos_salud.sql)
 #
 # FLUJO LOGIN:
-#   - Tipo doc == 'NIT'  → busca en public.entidad  por nit      (admin)
-#   - Cualquier otro     → busca en public.usuario_ops por tipo+doc (ops)
+#   1. Siempre primero verifica si el documento corresponde al Maestro
+#      (usuario_ops con nombre_completo ILIKE 'maestro%').  Si coincide →
+#      autentica contra usuario_ops y retorna rol='maestro'.
+#   2. Tipo doc == 'NIT'  → busca en public.entidad  por nit      (admin)
+#   3. Cualquier otro     → busca en public.usuario_ops por tipo+doc (ops)
 #
 # RPC UTILIZADAS (todas en public.*):
 #   rpc_registrar_entidad(nombre, nit, cod_hab, nivel, municipio,
@@ -119,9 +122,9 @@ def login(tipo_doc_abrev: str, documento: str, password: str) -> AuthResult:
         password        Contraseña en texto claro.
 
     Retorna AuthResult con datos = {
-        'rol':        'admin' | 'ops',
+        'rol':        'maestro' | 'admin' | 'ops',
         'id':         str,
-        'entidad_id': str,   # solo presente en rol='ops'
+        'entidad_id': str,   # presente en rol='ops' y rol='maestro'
         'nombre':     str,
         'correo':     str,
         'nit':        str,   # solo presente en rol='admin'
@@ -138,6 +141,45 @@ def login(tipo_doc_abrev: str, documento: str, password: str) -> AuthResult:
         with Conexion(dict_cursor=True) as conn:
             cur = conn.cursor()
 
+            # ── 1. Verificar si es el Maestro (SIEMPRE primero, sin importar tipo_doc) ──
+            # El Maestro vive en usuario_ops, no en entidad.
+            # Se identifica por nombre_completo ILIKE 'maestro%'.
+            cur.execute(
+                """
+                SELECT u.id, u.entidad_id, u.nombre_completo AS nombre,
+                       u.correo, u.password_hash, u.activo
+                FROM   public.usuario_ops u
+                JOIN   public.tipo_documento td ON td.id = u.tipo_documento_id
+                WHERE  u.numero_documento = %s
+                  AND  LOWER(u.nombre_completo) LIKE 'maestro%%'
+                LIMIT  1
+                """,
+                (documento,),
+            )
+            fila_maestro = cur.fetchone()
+
+            if fila_maestro:
+                if not fila_maestro["activo"]:
+                    return AuthResult(
+                        False,
+                        "La cuenta Maestro está inactiva. Contacta al administrador del sistema.",
+                    )
+                if not _check_pw(password, fila_maestro["password_hash"]):
+                    return AuthResult(False, "Contraseña incorrecta.")
+
+                sesion_id = _crear_sesion(cur, entidad_id=None, ops_id=fila_maestro["id"])
+                payload = {
+                    "rol":        "maestro",
+                    "id":         str(fila_maestro["id"]),
+                    "entidad_id": str(fila_maestro["entidad_id"]),
+                    "nombre":     fila_maestro["nombre"],
+                    "correo":     fila_maestro["correo"],
+                    "sesion_id":  sesion_id,
+                }
+                logger.info("Login OK — rol=maestro id=%s", payload["id"])
+                return AuthResult(ok=True, mensaje="Inicio de sesión exitoso.", datos=payload)
+
+            # ── 2. Login normal: NIT = entidad (admin) ─────────────────────
             if tipo_abrev == "NIT":
                 # ── Autenticación de entidad (admin) ──────────────────
                 cur.execute(
@@ -179,7 +221,7 @@ def login(tipo_doc_abrev: str, documento: str, password: str) -> AuthResult:
                 }
 
             else:
-                # ── Autenticación de usuario OPS ──────────────────────
+                # ── 3. Login OPS normal ───────────────────────────────
                 cur.execute(
                     """
                     SELECT u.id, u.entidad_id, u.nombre_completo AS nombre,

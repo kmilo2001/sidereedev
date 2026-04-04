@@ -58,7 +58,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QStackedWidget,
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QSizePolicy, QScrollArea, QSpacerItem,
-    QMessageBox, QDialog,
+    QMessageBox, QDialog, QComboBox,
 )
 from PySide6.QtCore import (
     Qt, Signal, QTimer, QSize, QPropertyAnimation,
@@ -150,54 +150,66 @@ class _Sesion:
     Singleton de sesion. Campos disponibles tras login exitoso:
 
     Para admin (rol='admin'):
-        rol        = 'admin'
-        id         = entidad_id (str)
-        entidad_id = int
-        nombre     = nombre_entidad
-        correo     = correo
-        nit        = nit
-        sesion_id  = uuid
+        rol               = 'admin'
+        id                = entidad_id (str)
+        entidad_id        = int
+        entidad_activa_id = int  (siempre igual a entidad_id para admin)
+        nombre            = nombre_entidad
+        correo, nit, sesion_id
 
     Para ops / maestro (rol='ops'):
-        rol        = 'ops'
-        id         = ops_id (str)
-        ops_id     = int
-        entidad_id = int
-        nombre     = nombre_completo
-        correo     = correo
-        es_maestro = bool
-        sesion_id  = uuid
+        rol               = 'ops'
+        id                = ops_id (str)
+        ops_id            = int
+        entidad_id        = int   ← entidad donde vive la cuenta del usuario
+        entidad_activa_id = int   ← entidad sobre la que OPERA actualmente.
+                                    Para OPS regular = entidad_id (fija).
+                                    Para Maestro: empieza en entidad_id pero
+                                    puede cambiarla con el selector de la TopBar.
+                                    TODOS los modulos usan este valor.
+        nombre, correo, es_maestro, sesion_id
     """
-    rol:        str        = ""
-    id:         str        = ""
-    nombre:     str        = ""
-    correo:     str        = ""
-    sesion_id:  str        = ""
-    entidad_id: int        = 0
-    ops_id:     int | None = None
-    nit:        str        = ""
-    es_maestro: bool       = False
+    rol:               str        = ""
+    id:                str        = ""
+    nombre:            str        = ""
+    correo:            str        = ""
+    sesion_id:         str        = ""
+    entidad_id:        int        = 0
+    entidad_activa_id: int        = 0
+    ops_id:            int | None = None
+    nit:               str        = ""
+    es_maestro:        bool       = False
 
     @classmethod
     def cargar(cls, datos: dict) -> None:
         """Carga los datos del login exitoso."""
-        cls.rol        = datos.get("rol", "")
-        cls.id         = datos.get("id", "")
-        cls.nombre     = datos.get("nombre", "")
-        cls.correo     = datos.get("correo", "")
-        cls.sesion_id  = datos.get("sesion_id", "")
-        cls.nit        = datos.get("nit", "")
+        cls.rol       = datos.get("rol", "")
+        cls.id        = datos.get("id", "")
+        cls.nombre    = datos.get("nombre", "")
+        cls.correo    = datos.get("correo", "")
+        cls.sesion_id = datos.get("sesion_id", "")
+        cls.nit       = datos.get("nit", "")
 
         if cls.rol == "admin":
-            cls.entidad_id = int(datos.get("id", 0))
-            cls.ops_id     = None
-            cls.es_maestro = False
+            cls.entidad_id        = int(datos.get("id", 0))
+            cls.entidad_activa_id = cls.entidad_id
+            cls.ops_id            = None
+            cls.es_maestro        = False
+        elif cls.rol == "maestro":
+            # login_backend retorna rol='maestro'. Normalizamos a ops+es_maestro=True.
+            cls.rol               = "ops"
+            cls.entidad_id        = int(datos.get("entidad_id", 0))
+            cls.entidad_activa_id = cls.entidad_id   # el Maestro puede cambiarla en TopBar
+            cls.ops_id            = int(datos.get("id", 0))
+            cls.es_maestro        = True
         else:
-            # ops o maestro
-            cls.entidad_id = int(datos.get("entidad_id", 0))
-            cls.ops_id     = int(datos.get("id", 0))
-            # Detectar maestro por nombre
-            cls.es_maestro = str(cls.nombre).strip().lower().startswith("maestro")
+            cls.entidad_id        = int(datos.get("entidad_id", 0))
+            cls.entidad_activa_id = cls.entidad_id   # OPS regular: fija
+            cls.ops_id            = int(datos.get("id", 0))
+            cls.es_maestro        = (
+                datos.get("es_maestro", False)
+                or str(cls.nombre).strip().lower().startswith("maestro")
+            )
 
     @classmethod
     def limpiar(cls) -> None:
@@ -205,10 +217,10 @@ class _Sesion:
         sesion_id = cls.sesion_id
         cls.rol = cls.id = cls.nombre = cls.correo = ""
         cls.sesion_id = cls.nit = ""
-        cls.entidad_id = 0
-        cls.ops_id     = None
-        cls.es_maestro = False
-        # Cerrar sesion en BD en hilo aparte para no bloquear UI
+        cls.entidad_id        = 0
+        cls.entidad_activa_id = 0
+        cls.ops_id            = None
+        cls.es_maestro        = False
         if sesion_id:
             try:
                 import login_backend as lb
@@ -220,19 +232,21 @@ class _Sesion:
     def construir_ejecutor(cls) -> dict:
         """
         Construye el ejecutor estandar compatible con todos los backends.
+        SIEMPRE usa entidad_activa_id para que el Maestro opere sobre la
+        entidad seleccionada, nunca sobre su entidad personal.
         """
         if cls.rol == "admin":
             return {
                 "rol":        "admin",
                 "ops_id":     None,
-                "entidad_id": cls.entidad_id,
+                "entidad_id": cls.entidad_activa_id,
                 "es_maestro": False,
                 "nombre":     cls.nombre,
             }
         return {
             "rol":        "ops",
             "ops_id":     cls.ops_id,
-            "entidad_id": cls.entidad_id,
+            "entidad_id": cls.entidad_activa_id,
             "es_maestro": cls.es_maestro,
             "nombre":     cls.nombre,
         }
@@ -537,8 +551,12 @@ class BottomNav(QWidget):
 # ══════════════════════════════════════════════════════════════
 
 class TopBar(QWidget):
-    """Barra superior con titulo del modulo activo y boton cerrar sesion."""
+    """
+    Barra superior con titulo del modulo activo y boton cerrar sesion.
+    Para el Maestro muestra además un selector de entidad activa.
+    """
     cerrar_sesion_solicitado = Signal()
+    entidad_cambiada         = Signal(int)   # emite el nuevo entidad_activa_id
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -566,6 +584,31 @@ class TopBar(QWidget):
         lay.addWidget(self._titulo)
         lay.addStretch()
 
+        # ── Selector de entidad (solo visible para el Maestro) ──
+        self._lbl_entidad = QLabel("Operando en:")
+        self._lbl_entidad.setStyleSheet(
+            f"color:{P['txt2']}; font-size:11px; background:transparent;"
+        )
+        self._combo_entidad = QComboBox()
+        self._combo_entidad.setMinimumWidth(220)
+        self._combo_entidad.setMaximumWidth(340)
+        self._combo_entidad.setFixedHeight(34)
+        self._combo_entidad.setStyleSheet(
+            f"QComboBox {{ background:{P['input']}; color:{P['txt']};"
+            f"  border:1px solid {P['border']}; border-radius:6px;"
+            f"  padding:4px 28px 4px 10px; font-size:12px; font-weight:600; }}"
+            f"QComboBox:hover {{ border-color:{P['focus']}; }}"
+            f"QComboBox::drop-down {{ border:none; width:22px; }}"
+            f"QComboBox QAbstractItemView {{ background:{P['card']}; color:{P['txt']};"
+            f"  border:1px solid {P['border']}; selection-background-color:{P['acc_lt']}; }}"
+        )
+        self._combo_entidad.currentIndexChanged.connect(self._on_entidad_cambiada)
+        self._combo_entidad.hide()
+        self._lbl_entidad.hide()
+
+        lay.addWidget(self._lbl_entidad)
+        lay.addWidget(self._combo_entidad)
+
         # Boton cerrar sesion
         btn_out = QPushButton("Cerrar sesion")
         btn_out.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -581,6 +624,34 @@ class TopBar(QWidget):
 
     def set_modulo(self, nombre: str):
         self._titulo.setText(nombre)
+
+    def cargar_entidades_maestro(self, entidades: list[dict], entidad_activa_id: int):
+        """
+        Pobla el selector con la lista de entidades activas.
+        Solo se llama cuando el rol es Maestro.
+        """
+        self._combo_entidad.blockSignals(True)
+        self._combo_entidad.clear()
+        idx_activo = 0
+        for i, e in enumerate(entidades):
+            eid  = e.get("id") or e.get("entidad_id")
+            nom  = e.get("nombre_entidad", f"Entidad {eid}")
+            self._combo_entidad.addItem(nom, eid)
+            if eid == entidad_activa_id:
+                idx_activo = i
+        self._combo_entidad.setCurrentIndex(idx_activo)
+        self._combo_entidad.blockSignals(False)
+        self._lbl_entidad.show()
+        self._combo_entidad.show()
+
+    def ocultar_selector_entidad(self):
+        self._lbl_entidad.hide()
+        self._combo_entidad.hide()
+
+    def _on_entidad_cambiada(self, idx: int):
+        eid = self._combo_entidad.itemData(idx)
+        if eid is not None:
+            self.entidad_cambiada.emit(int(eid))
 
 
 def _wrap(widget: QWidget) -> QWidget:
@@ -664,6 +735,7 @@ class VentanaPrincipal(QMainWindow):
         ("A", "Afiliaciones",    "afiliaciones"),
         ("V", "Eventos",         "eventos"),
         ("R", "Reportes",        "reportes"),
+        ("🔍","Auditoria",       "auditoria"),
         ("C", "Configuracion",   "config"),
     ]
     _MODULOS_OPS = [
@@ -672,6 +744,7 @@ class VentanaPrincipal(QMainWindow):
         ("A", "Afiliaciones",    "afiliaciones"),
         ("V", "Eventos",         "eventos"),
         ("R", "Reportes",        "reportes"),
+        ("🔍","Auditoria",       "auditoria"),
     ]
     _MODULOS_MAESTRO = [
         ("H", "Entidades",       "entidades"),
@@ -681,6 +754,7 @@ class VentanaPrincipal(QMainWindow):
         ("A", "Afiliaciones",    "afiliaciones"),
         ("V", "Eventos",         "eventos"),
         ("R", "Reportes",        "reportes"),
+        ("🔍","Auditoria",       "auditoria"),   # vision global de todo el sistema
         ("C", "Configuracion",   "config"),
     ]
 
@@ -733,6 +807,7 @@ class VentanaPrincipal(QMainWindow):
 
         self._topbar = TopBar()
         self._topbar.cerrar_sesion_solicitado.connect(self._pedir_cerrar_sesion)
+        self._topbar.entidad_cambiada.connect(self._on_entidad_cambiada)
         rl.addWidget(self._topbar)
 
         self._stack = QStackedWidget()
@@ -788,8 +863,45 @@ class VentanaPrincipal(QMainWindow):
         self._sidebar.set_usuario(_Sesion.nombre, rol_txt)
         self._bottom.actualizar_items(items)
 
+        # Selector de entidad: solo para el Maestro
+        if _Sesion.es_maestro:
+            self._cargar_entidades_en_selector()
+        else:
+            self._topbar.ocultar_selector_entidad()
+
         self._activar_modulo(0)
         self._aplicar_resize()
+
+    def _cargar_entidades_en_selector(self):
+        """
+        Carga la lista de entidades activas en el combo de la TopBar.
+        Corre en hilo aparte para no bloquear la UI.
+        """
+        ops_id = _Sesion.ops_id
+
+        class _EntidadesWorker(QThread):
+            done = Signal(list)
+            def __init__(self, oid):
+                super().__init__(); self._oid = oid
+            def run(self):
+                try:
+                    import maestro_backend as mbk
+                    entidades = mbk.listar_entidades(self._oid, solo_activas=True)
+                    self.done.emit(entidades)
+                except Exception as e:
+                    logger.error("Error cargando entidades para selector: %s", e)
+                    self.done.emit([])
+
+        w = _EntidadesWorker(ops_id)
+        w.done.connect(self._on_entidades_cargadas)
+        # Guardar referencia para evitar recolección de basura
+        self._entidades_worker = w
+        w.start()
+
+    def _on_entidades_cargadas(self, entidades: list):
+        if not entidades:
+            return
+        self._topbar.cargar_entidades_maestro(entidades, _Sesion.entidad_activa_id)
 
     def _activar_modulo(self, idx: int):
         """
@@ -835,8 +947,8 @@ class VentanaPrincipal(QMainWindow):
         Los modulos se envuelven en _wrap() para darles margen y
         fondo consistentes con el shell.
         """
-        ejecutor   = _Sesion.construir_ejecutor()
-        entidad_id = _Sesion.entidad_id
+        ejecutor   = _Sesion.construir_ejecutor()        # ya usa entidad_activa_id
+        entidad_id = _Sesion.entidad_activa_id           # ← entidad operativa, no personal
         ops_id     = _Sesion.ops_id
         nombre     = _Sesion.nombre
         rol        = "maestro" if _Sesion.es_maestro else _Sesion.rol
@@ -888,6 +1000,12 @@ class VentanaPrincipal(QMainWindow):
                     )
                 )
 
+            # ── Auditoria / Historial de actividad ────────────────
+            # Maestro: ve TODO. Admin: su entidad. OPS: sus acciones.
+            elif clave == "auditoria":
+                from auditoria_ui import TabAuditoria
+                return _wrap(TabAuditoria(ejecutor=ejecutor, entidad_id=entidad_id))
+
             # ── Configuracion conexion ─────────────────────────────
             elif clave == "config":
                 return _ConfigWrapper()
@@ -925,6 +1043,44 @@ class VentanaPrincipal(QMainWindow):
         lay.addWidget(msg); lay.addWidget(det)
         return w
 
+    # ── Cambio de entidad activa (solo Maestro) ────────────────
+
+    def _on_entidad_cambiada(self, nuevo_eid: int):
+        """
+        El Maestro seleccionó otra entidad en el combo de la TopBar.
+        1. Actualiza _Sesion.entidad_activa_id.
+        2. Destruye todos los módulos ya cargados (excepto 'entidades')
+           para que se recreen con el nuevo entidad_id al navegarlos.
+        3. Navega al módulo activo actual para que se recargue inmediatamente.
+        """
+        if nuevo_eid == _Sesion.entidad_activa_id:
+            return   # sin cambio real
+
+        _Sesion.entidad_activa_id = nuevo_eid
+        logger.info("Maestro cambió entidad activa → %s", nuevo_eid)
+
+        # Destruir todos los módulos cargados excepto "entidades"
+        # (el panel de entidades no depende de entidad_activa_id)
+        idx_a_mantener = set()
+        for idx, (_, _, clave) in enumerate(self._modulos_def):
+            if clave == "entidades":
+                idx_a_mantener.add(idx)
+
+        for idx in list(self._widgets_modulo.keys()):
+            if idx in idx_a_mantener:
+                continue
+            w_viejo = self._widgets_modulo.pop(idx)
+            # Reinsertar placeholder vacío en el stack
+            ph = QWidget()
+            ph.setStyleSheet(f"background:{P['bg']};")
+            self._stack.insertWidget(idx, ph)
+            self._stack.removeWidget(w_viejo)
+            w_viejo.deleteLater()
+
+        # Recargar el módulo activo con la nueva entidad
+        idx_actual = self._idx_activo
+        self._activar_modulo(idx_actual)
+
     # ── Cerrar sesion ──────────────────────────────────────────
 
     def _pedir_cerrar_sesion(self):
@@ -948,6 +1104,20 @@ class VentanaPrincipal(QMainWindow):
             self._cerrar_sesion()
 
     def _cerrar_sesion(self):
+        """
+        1. Destruye todos los módulos cargados en el stack (libera workers).
+        2. Limpia la sesión en memoria y BD.
+        3. Emite sesion_cerrada para que AppController oculte esta ventana
+           y muestre el login.
+        """
+        # Destruir módulos cargados para liberar workers y conexiones BD
+        self._widgets_modulo.clear()
+        while self._stack.count():
+            w = self._stack.widget(0)
+            self._stack.removeWidget(w)
+            w.hide()
+            w.deleteLater()
+
         _Sesion.limpiar()
         self.sesion_cerrada.emit()
 
@@ -1114,6 +1284,7 @@ class AppController:
         self._login_win.show()
         self._login_win.raise_()
         self._login_win.activateWindow()
+        self._login_win.setFocus()      # foco explícito para que responda al teclado
 
     def _limpiar_formulario_login(self):
         """
@@ -1176,16 +1347,24 @@ class AppController:
     def _on_sesion_cerrada(self):
         """
         Al cerrar sesion:
-          1. Ocultar la VentanaPrincipal completamente.
-          2. Mostrar el Login con formulario limpio.
+          1. Ocultar y desactivar la VentanaPrincipal.
+          2. Mostrar el Login con formulario limpio y darle foco.
         La sesion ya fue limpiada en VentanaPrincipal._cerrar_sesion().
         """
         logger.info("Sesion cerrada — volviendo al login.")
 
         if self._main_win is not None:
             self._main_win.hide()
+            self._main_win.setEnabled(False)   # evita interacción accidental
 
-        # Mostrar login (limpia formulario si ya existia)
+        # Usar QTimer para mostrar el login en el siguiente ciclo del event loop,
+        # garantizando que la ventana principal ya esté completamente oculta.
+        QTimer.singleShot(0, self._mostrar_login_tras_cierre)
+
+    def _mostrar_login_tras_cierre(self):
+        """Muestra el login y reactiva la ventana principal para futuros logins."""
+        if self._main_win is not None:
+            self._main_win.setEnabled(True)
         self._mostrar_login()
 
 

@@ -365,7 +365,7 @@ class ConfigConexionDialog(QDialog):
         self._solo_config  = solo_config
         self._forzar_modal = forzar_modal
         self._conexion_ok  = False
-        self._sec_visible  = False
+        self._sec_visible  = True
 
         self.setWindowTitle("Configuracion de base de datos — Gestion Eventos")
         self.setMinimumWidth(480)
@@ -431,7 +431,7 @@ class ConfigConexionDialog(QDialog):
 
         # Descripcion
         desc = QLabel(
-            "Introduce el nombre de la base de datos y la contrasena de PostgreSQL.\n"
+            "Completa todos los campos para conectar al servidor PostgreSQL.\n"
             "Esta configuracion se guarda automaticamente y no volvera a pedirse."
         )
         desc.setWordWrap(True)
@@ -455,14 +455,14 @@ class ConfigConexionDialog(QDialog):
         lbl_pw = _lbl("Contrasena de PostgreSQL", size=13, bold=True,
                       color=P["txt"])
         bl.addWidget(lbl_pw)
-        self.f_pw = Campo("", "Contrasena del usuario postgres", tipo="main", pw=True)
+        self.f_pw = Campo("", "Contrasena de PostgreSQL", tipo="main", pw=True)
         bl.addWidget(self.f_pw)
 
         bl.addSpacing(8)
         bl.addWidget(_sep())
 
         # ---- Seccion avanzada (colapsable) -------------------
-        self._btn_sec = QPushButton("  Configuracion avanzada")
+        self._btn_sec = QPushButton("  Configuracion avanzada (ocultar)")
         self._btn_sec.setStyleSheet(
             f"QPushButton{{background:transparent;color:{P['txt2']};"
             f"border:none;font-size:12px;text-align:left;padding:4px 0;}}"
@@ -481,18 +481,16 @@ class ConfigConexionDialog(QDialog):
         al.setContentsMargins(16, 12, 16, 12)
         al.setSpacing(12)
 
-        self.f_host = Campo("Host", "localhost", tipo="sec")
-        self.f_host.set("localhost")
+        self.f_host = Campo("Host / IP del servidor", "Ej: 192.168.1.10  o  localhost", tipo="sec")
 
         self.f_port = Campo("Puerto", "5432", tipo="sec", ancho=90)
         self.f_port.set("5432")
 
-        self.f_user = Campo("Usuario", "postgres", tipo="sec")
-        self.f_user.set("postgres")
+        self.f_user = Campo("Usuario de PostgreSQL", "Ej: postgres", tipo="sec")
 
         nota = QLabel(
-            "Estos son los valores predeterminados de PostgreSQL. "
-            "Modificalos solo si tu instalacion es diferente."
+            "Equipo unico (mismo PC): escribe  localhost  en Host y  postgres  en Usuario.\n"
+            "Red / servidor remoto: escribe la IP del servidor y el usuario correspondiente."
         )
         nota.setWordWrap(True)
         nota.setStyleSheet(
@@ -505,7 +503,7 @@ class ConfigConexionDialog(QDialog):
         al.addWidget(self.f_user, 1, 0, 1, 3)
         al.addWidget(nota,        2, 0, 1, 3)
 
-        self._panel_adv.hide()
+        self._panel_adv.show()
         bl.addWidget(self._panel_adv)
         bl.addSpacing(16)
 
@@ -542,19 +540,29 @@ class ConfigConexionDialog(QDialog):
     # ----------------------------------------------------------
 
     def _cargar_config_inicial(self):
-        """Pre-rellena los campos con la config guardada (si existe)."""
+        """
+        Pre-rellena los campos con la config guardada (si existe).
+        Si no hay config guardada, sugiere localhost/postgres para equipo unico.
+        """
         cfg = cfg_bk.cargar_config()
+        tiene_config = cfg_bk.config_existe()
+
         self.f_db.set(cfg.get("dbname", ""))
         # No pre-rellenar contrasena por seguridad
-        self.f_host.set(cfg.get("host", ""))
         self.f_port.set(str(cfg.get("port", 5432)))
-        self.f_user.set(cfg.get("user", ""))
 
-        if cfg_bk.config_existe():
+        if tiene_config:
+            # Hay config guardada: cargar los valores reales
+            self.f_host.set(cfg.get("host", ""))
+            self.f_user.set(cfg.get("user", ""))
             self._ind_hdr.setText("Config guardada")
             self._ind_hdr.setStyleSheet(
                 f"color:{P['txt2']};font-size:11px;background:transparent;"
             )
+        else:
+            # Primera vez: sugerir valores tipicos para equipo unico
+            self.f_host.set("localhost")
+            self.f_user.set("postgres")
 
     # ----------------------------------------------------------
     # LOGICA DE INTERACCION
@@ -583,10 +591,10 @@ class ConfigConexionDialog(QDialog):
     def _leer_cfg(self) -> dict:
         """Construye el dict de configuracion desde los campos del formulario."""
         return {
-            "host":     self.f_host.text().strip(),
+            "host":     self.f_host.text() or "localhost",
             "port":     int(self.f_port.text() or "5432"),
-            "dbname":   self.f_db.text().strip(),
-            "user":     self.f_user.text().strip(),
+            "dbname":   self.f_db.text()   or "",
+            "user":     self.f_user.text() or "postgres",
             "password": self.f_pw.text(),
         }
 

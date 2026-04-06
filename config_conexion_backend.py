@@ -14,6 +14,13 @@ Responsabilidades:
   3. Aplicar la configuracion guardada a conexion.py (solo al confirmar)
   4. Notificar a conexion.py cuando la config cambia (sincronizacion bidireccional)
 
+Politica de valores por defecto:
+  - Solo el puerto (5432) tiene valor predefinido.
+  - Host, dbname, user y password son SIEMPRE obligatorios y deben
+    ingresarse manualmente en cada equipo cliente.
+  - Esto garantiza que la app no intente conectar con credenciales
+    incorrectas en equipos que apuntan a distintos servidores.
+
 Flujo tipico:
   config_conexion_ui  ->  config_conexion_backend  ->  gestion_eventos_db.cfg
   config_conexion_ui  ->  config_conexion_backend  ->  conexion.py (solo al aplicar)
@@ -31,12 +38,14 @@ from typing import Any, Callable
 # Se ubica junto a este modulo; compartido con conexion.py
 CFG_FILE = Path(__file__).parent / "gestion_eventos_db.cfg"
 
-# Valores por defecto de una instalacion estandar de PostgreSQL
+# Valores por defecto: SOLO el puerto tiene valor predefinido.
+# Host, dbname, user y password deben ser configurados manualmente
+# por el usuario en cada equipo cliente.
 DEFAULTS: dict[str, Any] = {
-    "host":     "localhost",
+    "host":     "",
     "port":     5432,
-    "dbname":   "gestion_eventos",
-    "user":     "postgres",
+    "dbname":   "",
+    "user":     "",
     "password": "",
 }
 

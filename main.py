@@ -763,6 +763,10 @@ class VentanaPrincipal(QMainWindow):
         self.setWindowTitle("SIGES — Sistema de Gestion de Eventos en Salud")
         self.setMinimumSize(400, 520)
         self.setStyleSheet(STYLE_GLOBAL)
+        # Heredar el icono que ya fue asignado a QApplication
+        _ico = QApplication.instance().windowIcon() if QApplication.instance() else QIcon()
+        if not _ico.isNull():
+            self.setWindowIcon(_ico)
 
         # Dimensionar al 90% de la pantalla disponible
         screen = QApplication.primaryScreen()
@@ -1121,6 +1125,23 @@ class VentanaPrincipal(QMainWindow):
         _Sesion.limpiar()
         self.sesion_cerrada.emit()
 
+    # ── Cierre de ventana ──────────────────────────────────────
+
+    def closeEvent(self, event):
+        """
+        Intercepta el cierre de la ventana principal (Alt+F4, boton X del OS).
+        Si hay sesion activa, trata el cierre como 'cerrar sesion' y vuelve
+        al Login en lugar de terminar la aplicacion.
+        Si no hay sesion activa (ya se cerro sesion), permite cerrar normalmente.
+        """
+        if _Sesion.rol:
+            # Hay sesion activa → preguntar y volver al login
+            event.ignore()
+            self._pedir_cerrar_sesion()
+        else:
+            # Sin sesion activa → cierre normal de la app
+            event.accept()
+
     # ── Responsividad ──────────────────────────────────────────
 
     def resizeEvent(self, e: QResizeEvent):
@@ -1373,6 +1394,18 @@ class AppController:
 # ══════════════════════════════════════════════════════════════
 
 def main():
+    # ── Windows: fijar AppUserModelID ANTES de crear QApplication ──
+    # Sin esto, Windows asocia la ventana al intérprete python.exe en la
+    # taskbar y muestra el ícono de Python en lugar del del exe.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "CamiloOrtiz.SIGES.1.0"
+            )
+        except Exception:
+            pass
+
     # Alta resolucion DPI (4K, monitores de alta densidad)
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
@@ -1383,6 +1416,40 @@ def main():
     app.setApplicationDisplayName("Sistema de Gestion de Eventos en Salud")
     app.setApplicationVersion("1.0")
     app.setStyleSheet(STYLE_GLOBAL)
+
+    # ── Icono de la aplicacion ─────────────────────────────────
+    # Busca el icono en: carpeta del exe (PyInstaller), _MEIPASS (--onefile),
+    # y directorio del script. Soporta .ico (Windows) y .png (fallback).
+    import os
+    def _resolver_icono() -> QIcon:
+        _candidatos = []
+        # 1. Directorio del ejecutable / script
+        base_exe = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else __file__)
+        # 2. _MEIPASS de PyInstaller (--onefile)
+        base_mei = getattr(sys, "_MEIPASS", None)
+        for base in filter(None, [base_exe, base_mei]):
+            _candidatos += [
+                os.path.join(base, "logo.ico"),   # nombre real del archivo
+                os.path.join(base, "siges.ico"),
+                os.path.join(base, "icon.ico"),
+                os.path.join(base, "logo.png"),
+                os.path.join(base, "siges.png"),
+                os.path.join(base, "icon.png"),
+                os.path.join(base, "assets", "logo.ico"),
+                os.path.join(base, "assets", "siges.ico"),
+            ]
+        for ruta in _candidatos:
+            if os.path.isfile(ruta):
+                ico = QIcon(ruta)
+                if not ico.isNull():
+                    logger.info("Icono cargado: %s", ruta)
+                    return ico
+        logger.warning("No se encontro archivo de icono (logo.ico).")
+        return QIcon()
+
+    app_icon = _resolver_icono()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
 
     # Fuente base del sistema
     fuente = QFont("Segoe UI", 10)

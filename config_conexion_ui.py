@@ -544,11 +544,11 @@ class ConfigConexionDialog(QDialog):
     def _cargar_config_inicial(self):
         """Pre-rellena los campos con la config guardada (si existe)."""
         cfg = cfg_bk.cargar_config()
-        self.f_db.set(cfg.get("dbname", "gestion_eventos"))
+        self.f_db.set(cfg.get("dbname", ""))
         # No pre-rellenar contrasena por seguridad
-        self.f_host.set(cfg.get("host", "localhost"))
+        self.f_host.set(cfg.get("host", ""))
         self.f_port.set(str(cfg.get("port", 5432)))
-        self.f_user.set(cfg.get("user", "postgres"))
+        self.f_user.set(cfg.get("user", ""))
 
         if cfg_bk.config_existe():
             self._ind_hdr.setText("Config guardada")
@@ -583,10 +583,10 @@ class ConfigConexionDialog(QDialog):
     def _leer_cfg(self) -> dict:
         """Construye el dict de configuracion desde los campos del formulario."""
         return {
-            "host":     self.f_host.text() or "localhost",
+            "host":     self.f_host.text().strip(),
             "port":     int(self.f_port.text() or "5432"),
-            "dbname":   self.f_db.text()   or "",
-            "user":     self.f_user.text() or "postgres",
+            "dbname":   self.f_db.text().strip(),
+            "user":     self.f_user.text().strip(),
             "password": self.f_pw.text(),
         }
 

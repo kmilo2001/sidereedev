@@ -44,15 +44,17 @@ _fijar_streams()
 
 # ---------------------------------------------------------------------------
 # PARAMETROS DE CONEXION
-# Valores por defecto. Se sobreescriben automaticamente al cargar
-# gestion_eventos_db.cfg (ver bloque de sincronizacion al final del modulo).
+# Solo el puerto tiene valor por defecto. El resto DEBE ser configurado
+# manualmente por el usuario desde la interfaz de configuracion de conexion.
+# Los valores se cargan automaticamente desde gestion_eventos_db.cfg al
+# importar el modulo (ver bloque de sincronizacion al final del modulo).
 # ---------------------------------------------------------------------------
 DB_CONFIG: dict = {
-    "host":     "localhost",
+    "host":     "",
     "port":     5432,
-    "dbname":   "gestion_eventos",
-    "user":     "postgres",
-    "password": "17",
+    "dbname":   "",
+    "user":     "",
+    "password": "",
     "options":  "-c search_path=public",
 }
 

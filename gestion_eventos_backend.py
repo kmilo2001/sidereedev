@@ -419,10 +419,13 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
       trg_auditar -> registra en auditoria
     """
     # Validacion de campos obligatorios
-    requeridos = ["paciente_id", "fecha_evento", "tipo_afiliacion_id", "motivo"]
+    requeridos = ["paciente_id", "fecha_evento", "tipo_afiliacion_id"]
     for c in requeridos:
         if datos.get(c) is None or str(datos.get(c, "")).strip() == "":
             return Resultado(False, f"El campo '{c}' es obligatorio.")
+
+    # Motivo: usar valor por defecto si no se provee
+    motivo = (datos.get("motivo") or "").strip() or "Atencion registrada"
 
     # Valor
     try:
@@ -458,7 +461,6 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
     afil_id  = int(datos["tipo_afiliacion_id"])
     pac_id   = int(datos["paciente_id"])
     fecha_ev = str(datos["fecha_evento"])[:10]
-    motivo   = datos["motivo"].strip()
     afiliado = bool(datos.get("afiliado_eps", False))
 
     try:

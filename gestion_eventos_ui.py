@@ -828,18 +828,18 @@ class SelectorPaciente(QWidget):
 # ══════════════════════════════════════════════════════════════
 
 class BaseDialog(QDialog):
-    def __init__(self, titulo: str, ancho: int = 560, parent=None):
+    def __init__(self, titulo: str, ancho: int = 760, parent=None):
         super().__init__(parent)
         self.setWindowTitle(titulo)
         self.setModal(True)
         app = QApplication.instance()
-        sw = 800
+        sw = 1000
         if app:
             sc = app.primaryScreen()
             if sc: sw = sc.availableGeometry().width()
-        ancho = min(ancho, max(360, int(sw * 0.92)))
-        self.setMinimumWidth(min(360, ancho))
-        self.setMaximumWidth(min(840, sw))
+        ancho = min(ancho, max(500, int(sw * 0.88)))
+        self.setMinimumWidth(min(500, ancho))
+        self.setMaximumWidth(min(1100, sw))
         self.setStyleSheet(f"QDialog{{background:{P['bg']};}}")
 
         outer = QVBoxLayout(self)
@@ -880,7 +880,7 @@ class BaseDialog(QDialog):
         scroll.setWidget(inner)
         outer.addWidget(scroll)
         sh = _screen_h()
-        self.resize(ancho, min(int(sh * 0.82), 720))
+        self.resize(ancho, min(int(sh * 0.90), 860))
 
     def _fin(self):
         QTimer.singleShot(0, self._aplicar_tamanio)
@@ -907,7 +907,7 @@ class DialogEvento(BaseDialog):
     def __init__(self, entidad_id: int, ops_id, rol: str,
                  datos_ini: dict | None = None, parent=None):
         titulo = "Editar evento de atencion" if datos_ini else "Registrar nuevo evento de atencion"
-        super().__init__(titulo, 620, parent)
+        super().__init__(titulo, 820, parent)
         self._eid       = entidad_id
         self._oid       = _ops_safe(ops_id)
         self._rol       = rol
@@ -971,13 +971,7 @@ class DialogEvento(BaseDialog):
             "Ej: ADM-2024-001",
             ayuda="Obligatorio siempre. Numero asignado por admisiones al ingreso del paciente."
         )
-        lay.addWidget(self.f_admision); lay.addSpacing(12)
-
-        self.f_motivo = InputF(
-            "Motivo de la consulta / atencion *",
-            "Describe brevemente el motivo: ej. Consulta de urgencias por dolor toracico…"
-        )
-        lay.addWidget(self.f_motivo)
+        lay.addWidget(self.f_admision)
         lay.addSpacing(20)
 
         # ── SECCION 3: EPS y afiliacion ────────────────────────
@@ -1030,17 +1024,7 @@ class DialogEvento(BaseDialog):
             f"color:{P['muted']};font-size:11px;background:transparent;"
         )
         afil_lay.addWidget(self.ck_afil); afil_lay.addWidget(nota_afil)
-        lay.addWidget(afil_w); lay.addSpacing(12)
-
-        # Tipo de afiliacion
-        self.f_afil = ComboF(
-            "Tipo de afiliacion *",
-            ayuda="Indica como esta vinculado el paciente al sistema de salud"
-        )
-        self.f_afil.add("-- Selecciona el tipo de afiliacion --", None)
-        for a in self._afil_list:
-            self.f_afil.add(a["nombre"], a["id"])
-        lay.addWidget(self.f_afil)
+        lay.addWidget(afil_w)
         lay.addSpacing(20)
 
         # ── SECCION 4: Facturacion ─────────────────────────────
@@ -1165,15 +1149,12 @@ class DialogEvento(BaseDialog):
             f"border-radius:7px;padding:12px 14px;"
         )
         eps_id  = pac.get("eps_id")
-        afil_id = pac.get("tipo_afiliacion_id")
         if eps_id:
             self.f_eps.set_by_data(eps_id)
             self.ck_afil.setChecked(True)
         else:
             self.f_eps.set_by_data(None)
             self.ck_afil.setChecked(False)
-        if afil_id:
-            self.f_afil.set_by_data(afil_id)
 
     def _precargar(self, d: dict):
         pac = ev_bk.obtener_datos_paciente(self._eid, d.get("paciente_id", 0))
@@ -1186,7 +1167,6 @@ class DialogEvento(BaseDialog):
         self.f_fecha.set(str(d.get("fecha_evento", ""))[:10])
         self.f_eps.set_by_data(d.get("eps_id"))
         self.ck_afil.setChecked(bool(d.get("afiliado_eps")))
-        self.f_afil.set_by_data(d.get("tipo_afiliacion_id"))
         self.f_factura.set(d.get("numero_factura", "") or "")
         pac_nombre = (d.get("paciente_nombre") or d.get("nombre_paciente", ""))
         if pac_nombre:
@@ -1201,7 +1181,6 @@ class DialogEvento(BaseDialog):
                 f"background:{P['acc_lt']};border:1.5px solid {P['accent']}; "
                 f"border-radius:7px;padding:12px 14px;"
             )
-        self.f_motivo.set(d.get("motivo", ""))
         self.f_admision.set(d.get("numero_admision", "") or "")
         self.f_codigo.set(d.get("codigo_evento", "") or "")
         val = d.get("valor", 0)
@@ -1215,10 +1194,6 @@ class DialogEvento(BaseDialog):
         pac = self.selector.get_paciente()
         if not pac:
             self.sb.err("Debes seleccionar un paciente antes de guardar."); return
-        if not self.f_afil.data():
-            self.sb.err("Debes seleccionar el tipo de afiliacion."); return
-        if not self.f_motivo.text():
-            self.sb.err("El motivo de la atencion es obligatorio."); return
         if not self.f_admision.text():
             self.sb.err("El numero de admision es obligatorio."); return
 
@@ -1257,13 +1232,16 @@ class DialogEvento(BaseDialog):
             self.f_codigo.ok()
             self.f_factura.ok()
 
+        # Usar tipo_afiliacion_id del paciente si existe, o 1 como fallback
+        afil_id = (pac.get("tipo_afiliacion_id") or 1)
+
         datos = {
             "paciente_id":        pac["paciente_id"],
             "fecha_evento":       self.f_fecha.text(),
             "eps_id":             self.f_eps.data(),
-            "tipo_afiliacion_id": self.f_afil.data(),
+            "tipo_afiliacion_id": afil_id,
             "afiliado_eps":       self.ck_afil.isChecked(),
-            "motivo":             self.f_motivo.text(),
+            "motivo":             "Atencion registrada",
             "numero_admision":    self.f_admision.text() or None,
             "codigo_evento":      self.f_codigo.text() or None,
             "valor":              valor_txt,
@@ -1276,7 +1254,7 @@ class DialogEvento(BaseDialog):
             self.bok.setEnabled(True); self.bok.setText("Guardar evento")
             if res.ok:
                 self.sb.ok(res.mensaje)
-                QTimer.singleShot(500, self.accept)
+                QTimer.singleShot(400, self.accept)
             else:
                 self.sb.err(res.mensaje)
 
@@ -1296,7 +1274,7 @@ class DialogGestionar(BaseDialog):
 
     def __init__(self, entidad_id: int, ops_id, rol: str,
                  evento: dict, parent=None):
-        super().__init__("Gestionar evento - acceso rapido", 560, parent)
+        super().__init__("Gestionar evento - acceso rapido", 760, parent)
         self._eid    = entidad_id
         self._oid    = _ops_safe(ops_id)
         self._rol    = rol
@@ -1347,13 +1325,6 @@ class DialogGestionar(BaseDialog):
         # ── Datos editables ────────────────────────────────────
         lay.addWidget(_sec_header("Datos a actualizar"))
         lay.addSpacing(10)
-
-        self.f_motivo = InputF(
-            "Motivo de la atencion *",
-            "Describe el motivo de la consulta o atencion…"
-        )
-        self.f_motivo.set(ev.get("motivo", ""))
-        lay.addWidget(self.f_motivo); lay.addSpacing(12)
 
         self.f_admision = InputF(
             "Numero de admision *",
@@ -1413,8 +1384,6 @@ class DialogGestionar(BaseDialog):
 
     def _guardar(self):
         self.sb.ocultar()
-        if not self.f_motivo.text():
-            self.sb.err("El motivo es obligatorio."); return
         if not self.f_admision.text():
             self.f_admision.err("El numero de admision es obligatorio.")
             self.sb.err("El numero de admision es obligatorio."); return
@@ -1448,13 +1417,15 @@ class DialogGestionar(BaseDialog):
             self.f_codigo.ok()
             self.f_factura.ok()
 
+        afil_id = self._ev.get("tipo_afiliacion_id") or 1
+
         datos = {
             "paciente_id":        self._pac_id,
             "fecha_evento":       str(self._ev.get("fecha_evento", ""))[:10],
             "eps_id":             self._ev.get("eps_id"),
-            "tipo_afiliacion_id": self._ev.get("tipo_afiliacion_id"),
+            "tipo_afiliacion_id": afil_id,
             "afiliado_eps":       bool(self._ev.get("afiliado_eps")),
-            "motivo":             self.f_motivo.text(),
+            "motivo":             self._ev.get("motivo") or "Atencion registrada",
             "numero_admision":    self.f_admision.text() or None,
             "codigo_evento":      self.f_codigo.text() or None,
             "valor":              valor_txt,
@@ -1466,7 +1437,7 @@ class DialogGestionar(BaseDialog):
             self.bok.setEnabled(True); self.bok.setText("Guardar cambios")
             if res.ok:
                 self.sb.ok(res.mensaje)
-                QTimer.singleShot(500, self.accept)
+                QTimer.singleShot(400, self.accept)
             else:
                 self.sb.err(res.mensaje)
 
@@ -1483,7 +1454,7 @@ class DialogGestionar(BaseDialog):
 
 class DialogVerEvento(BaseDialog):
     def __init__(self, ev: dict, parent=None):
-        super().__init__("Detalle completo del evento", 560, parent)
+        super().__init__("Detalle completo del evento", 760, parent)
 
         def _fila(lbl_txt, val, negrita=False):
             row = QHBoxLayout()
@@ -2076,14 +2047,14 @@ class TabEventos(QWidget):
         editable = d.get("es_editable", False)
         estado   = (d.get("estado") or "").lower()
 
-        btn = QPushButton("  Acciones  ")
-        btn.setFixedHeight(32)
-        btn.setMinimumWidth(110)
+        btn = QPushButton("⋮")
+        btn.setFixedSize(36, 36)
         btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        btn.setToolTip("Acciones")
         btn.setStyleSheet(
             f"QPushButton{{background:{P['card']};color:{P['txt']};"
             f"border:1.5px solid {P['border']};border-radius:7px;"
-            f"padding:0 10px;font-size:12px;font-weight:600;}}"
+            f"padding:0 4px;font-size:20px;font-weight:700;}}"
             f"QPushButton:hover{{background:{P['input']};"
             f"border-color:{P['focus']};color:{P['white']};}}"
             f"QPushButton:pressed{{background:{P['acc_lt']};}}"

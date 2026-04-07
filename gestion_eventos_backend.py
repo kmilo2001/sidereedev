@@ -447,12 +447,11 @@ def guardar_evento(entidad_id: int, ops_id, datos: dict,
         if not num_admision:
             return Resultado(False, "El numero de admision es obligatorio al registrar el evento.")
 
-    # Al terminar (estado=2 / valor>0): los tres campos son obligatorios
+    # Al terminar (estado=2 / valor>0): admision y factura son obligatorios
+    # El codigo del evento es opcional, se puede registrar sin el
     if estado_id == 2:
         if not num_admision:
             return Resultado(False, "El numero de admision es obligatorio para terminar el evento.")
-        if not num_codigo:
-            return Resultado(False, "El codigo del evento es obligatorio para terminar el evento.")
         if not num_factura:
             return Resultado(False, "El numero de factura es obligatorio para terminar el evento.")
 
